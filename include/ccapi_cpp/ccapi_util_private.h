@@ -3,8 +3,9 @@
 #ifdef _WIN32
 #define timegm _mkgmtime
 #endif
+#if defined(__linux__) || defined(__APPLE__) || defined(__EMSCRIPTEN__)
 #include <unistd.h>
-
+#endif
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -33,497 +34,495 @@ namespace ccapi {
 /**
  * Utilities.
  */
-class UtilString CCAPI_FINAL {
- public:
-  static std::string roundInputBySignificantFigure(double input, int numSignificantFigure, int roundDirection) {
-    const auto& splitted = UtilString::split(UtilString::printDoubleScientific(input), 'e');
-    double a = std::stod(splitted.at(0)) * std::pow(10, numSignificantFigure - 1);
-    double b;
-    if (roundDirection > 0) {
-      b = std::ceil(a);
-    } else if (roundDirection < 0) {
-      b = std::floor(a);
-    } else {
-      b = std::round(a);
+class UtilString CCAPI_FINAL{public : static std::string roundInputBySignificantFigure(
+    double input, int numSignificantFigure, int roundDirection){const auto& splitted = UtilString::split(UtilString::printDoubleScientific(input), 'e');
+double a = std::stod(splitted.at(0)) * std::pow(10, numSignificantFigure - 1);
+double b;
+if (roundDirection > 0) {
+  b = std::ceil(a);
+} else if (roundDirection < 0) {
+  b = std::floor(a);
+} else {
+  b = std::round(a);
+}
+std::string c = std::to_string(static_cast<int>(b));
+int exponent = std::stoi(splitted.at(1)) - (numSignificantFigure - 1);
+std::string output;
+if (exponent >= 0) {
+  output = c + std::string(exponent, '0');
+} else if (-exponent <= c.size() - 1) {
+  output = c.substr(0, c.size() + exponent);
+  output += ".";
+  output += c.substr(c.size() + exponent);
+} else {
+  //      output = std::string(-exponent - c.size() + 1, '0');
+  //      output += ".";
+  //      output += c;  // use these three code, roundInputBySignificantFigure(0.00123456, 3, 1), output is  "000.124"
+  output = "0.";
+  output += std::string(-exponent - c.size(), '0');
+  output += c;  // use these three code, roundInputBySignificantFigure(0.00123456, 3, 1), output is  "0.00124"
+}
+return output;
+}  // namespace ccapi
+
+static std::string replaceFirstOccurrence(std::string& s, const std::string& toReplace, const std::string& replaceWith) {
+  std::size_t pos = s.find(toReplace);
+  if (pos == std::string::npos) {
+    return s;
+  };
+  return s.replace(pos, toReplace.length(), replaceWith);
+}
+
+static bool endsWith(const std::string& mainStr, const std::string& toMatch) {
+  if (mainStr.size() >= toMatch.size() && mainStr.compare(mainStr.size() - toMatch.size(), toMatch.size(), toMatch) == 0) {
+    return true;
+  } else {
+    return false;
+  }
+}
+
+static std::string printDoubleScientific(double number, int precision = CCAPI_PRINT_DOUBLE_PRECISION_DEFAULT) {
+  std::stringstream ss;
+  ss << std::setprecision(precision) << std::scientific << number;
+  // ss << number;
+  return ss.str();
+}
+
+static bool isNumber(const std::string& s) {
+  return !s.empty() && std::find_if(s.begin(), s.end(), [](unsigned char c) { return !std::isdigit(c); }) == s.end();
+}
+
+// https://stackoverflow.com/questions/440133/how-do-i-create-a-random-alpha-numeric-string-in-c
+static std::string generateRandomString(const size_t length) {
+  static const auto ch_set = std::vector<char>({'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K',
+                                                'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
+                                                'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'});
+  static std::default_random_engine rng(std::random_device{}());
+  static std::uniform_int_distribution<> dist(0, ch_set.size() - 1);
+  static auto randchar = []() { return ch_set[dist(rng)]; };
+  std::string str(length, 0);
+  std::generate_n(str.begin(), length, randchar);
+  return str;
+}
+
+static std::string generateUuidV4() {
+  static std::random_device rd;
+  static std::mt19937 gen(rd());
+  static std::uniform_int_distribution<> dis(0, 15);
+  static std::uniform_int_distribution<> dis2(8, 11);
+  std::stringstream ss;
+  int i;
+  ss << std::hex;
+  for (i = 0; i < 8; i++) {
+    ss << dis(gen);
+  }
+  ss << "-";
+  for (i = 0; i < 4; i++) {
+    ss << dis(gen);
+  }
+  ss << "-4";
+  for (i = 0; i < 3; i++) {
+    ss << dis(gen);
+  }
+  ss << "-";
+  ss << dis2(gen);
+  for (i = 0; i < 3; i++) {
+    ss << dis(gen);
+  }
+  ss << "-";
+  for (i = 0; i < 12; i++) {
+    ss << dis(gen);
+  };
+  return ss.str();
+}
+
+static std::vector<std::string> split(const std::string& in, char sep) {
+  std::vector<std::string> r;
+  r.reserve(std::count(in.begin(), in.end(), sep) + 1);
+  for (auto p = in.begin();; ++p) {
+    auto q = p;
+    p = std::find(p, in.end(), sep);
+    r.emplace_back(q, p);
+    if (p == in.end()) {
+      return r;
     }
-    std::string c = std::to_string(static_cast<int>(b));
-    int exponent = std::stoi(splitted.at(1)) - (numSignificantFigure - 1);
-    std::string output;
-    if (exponent >= 0) {
-      output = c + std::string(exponent, '0');
-    } else if (-exponent <= c.size() - 1) {
-      output = c.substr(0, c.size() + exponent);
-      output += ".";
-      output += c.substr(c.size() + exponent);
-    } else {
-      //      output = std::string(-exponent - c.size() + 1, '0');
-      //      output += ".";
-      //      output += c;  // use these three code, roundInputBySignificantFigure(0.00123456, 3, 1), output is  "000.124"
-      output = "0.";
-      output += std::string(-exponent - c.size(), '0');
-      output += c;  // use these three code, roundInputBySignificantFigure(0.00123456, 3, 1), output is  "0.00124"
-    }
-    return output;
   }
+}
 
-  static std::string replaceFirstOccurrence(std::string& s, const std::string& toReplace, const std::string& replaceWith) {
-    std::size_t pos = s.find(toReplace);
-    if (pos == std::string::npos) {
-      return s;
-    };
-    return s.replace(pos, toReplace.length(), replaceWith);
+static std::vector<std::string> split(const std::string& original, const std::string& delimiter) {
+  std::string s = original;
+  std::vector<std::string> output;
+  size_t pos = 0;
+  std::string token;
+  while ((pos = s.find(delimiter)) != std::string::npos) {
+    token = s.substr(0, pos);
+    output.emplace_back(std::move(token));
+    s.erase(0, pos + delimiter.length());
   }
+  output.emplace_back(std::move(s));
+  return output;
+}
 
-  static bool endsWith(const std::string& mainStr, const std::string& toMatch) {
-    if (mainStr.size() >= toMatch.size() && mainStr.compare(mainStr.size() - toMatch.size(), toMatch.size(), toMatch) == 0) {
-      return true;
-    } else {
-      return false;
-    }
+static std::set<std::string> splitToSet(const std::string& original, const std::string& delimiter) {
+  std::string s = original;
+  std::set<std::string> output;
+  size_t pos = 0;
+  std::string token;
+  while ((pos = s.find(delimiter)) != std::string::npos) {
+    token = s.substr(0, pos);
+    output.insert(std::move(token));
+    s.erase(0, pos + delimiter.length());
   }
+  output.insert(std::move(s));
+  return output;
+}
 
-  static std::string printDoubleScientific(double number, int precision = CCAPI_PRINT_DOUBLE_PRECISION_DEFAULT) {
-    std::stringstream ss;
-    ss << std::setprecision(precision) << std::scientific << number;
-    // ss << number;
-    return ss.str();
+static std::string join(const std::vector<std::string>& strings, const std::string& delimiter) {
+  switch (strings.size()) {
+    case 0:
+      return "";
+    case 1:
+      return strings.at(0);
+    default:
+      std::ostringstream joined;
+      std::copy(strings.begin(), strings.end() - 1, std::ostream_iterator<std::string>(joined, delimiter.c_str()));
+      joined << *strings.rbegin();
+      return joined.str();
   }
+}
 
-  static bool isNumber(const std::string& s) {
-    return !s.empty() && std::find_if(s.begin(), s.end(), [](unsigned char c) { return !std::isdigit(c); }) == s.end();
-  }
+static std::string join(const std::set<std::string>& strings, const std::string& delimiter) {
+  std::vector<std::string> strings_vector(strings.begin(), strings.end());
+  return join(strings_vector, delimiter);
+}
 
-  // https://stackoverflow.com/questions/440133/how-do-i-create-a-random-alpha-numeric-string-in-c
-  static std::string generateRandomString(const size_t length) {
-    static const auto ch_set = std::vector<char>({'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K',
-                                                  'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'c', 'd', 'e', 'f',
-                                                  'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z'});
-    static std::default_random_engine rng(std::random_device{}());
-    static std::uniform_int_distribution<> dist(0, ch_set.size() - 1);
-    static auto randchar = []() { return ch_set[dist(rng)]; };
-    std::string str(length, 0);
-    std::generate_n(str.begin(), length, randchar);
+static std::string toUpper(const std::string& input) {
+  std::string output(input);
+  std::transform(output.begin(), output.end(), output.begin(), ::toupper);
+  return output;
+}
+
+static std::string toLower(const std::string& input) {
+  std::string output(input);
+  std::transform(output.begin(), output.end(), output.begin(), ::tolower);
+  return output;
+}
+
+static std::string ltrim(const std::string& original, const std::string& chars = "\t\n\v\f\r ") {
+  std::string str = original;
+  str.erase(0, str.find_first_not_of(chars));
+  return str;
+}
+
+static std::string ltrim(const std::string& original, char c) {
+  std::string str = original;
+  str.erase(0, str.find_first_not_of(c));
+  return str;
+}
+
+static void ltrimInPlace(std::string& str, const std::string& chars = "\t\n\v\f\r ") { str.erase(0, str.find_first_not_of(chars)); }
+
+static void ltrimInPlace(std::string& str, char c) { str.erase(0, str.find_first_not_of(c)); }
+
+static std::string rtrim(const std::string& original, const std::string& chars = "\t\n\v\f\r ") {
+  std::string str = original;
+  str.erase(str.find_last_not_of(chars) + 1);
+  return str;
+}
+
+static std::string rtrim(const std::string& original, char c) {
+  std::string str = original;
+  str.erase(str.find_last_not_of(c) + 1);
+  return str;
+}
+
+static void rtrimInPlace(std::string& str, const std::string& chars = "\t\n\v\f\r ") { str.erase(str.find_last_not_of(chars) + 1); }
+
+static void rtrimInPlace(std::string& str, char c) { str.erase(str.find_last_not_of(c) + 1); }
+
+static std::string trim(const std::string& original, const std::string& chars = "\t\n\v\f\r ") { return ltrim(rtrim(original, chars), chars); }
+
+static std::string trim(const std::string& original, char c) { return ltrim(rtrim(original, c), c); }
+
+static void trimInPlace(std::string& str, const std::string& chars = "\t\n\v\f\r ") {
+  rtrimInPlace(str, chars);
+  ltrimInPlace(str, chars);
+}
+
+static void trimInPlace(std::string& str, char c) {
+  rtrimInPlace(str, c);
+  ltrimInPlace(str, c);
+}
+
+static std::string firstNCharacter(const std::string& str, const size_t n) {
+  if (str.length() > n) {
+    return str.substr(0, n) + "...";
+  } else {
     return str;
   }
+}
 
-  static std::string generateUuidV4() {
-    static std::random_device rd;
-    static std::mt19937 gen(rd());
-    static std::uniform_int_distribution<> dis(0, 15);
-    static std::uniform_int_distribution<> dis2(8, 11);
-    std::stringstream ss;
-    int i;
-    ss << std::hex;
-    for (i = 0; i < 8; i++) {
-      ss << dis(gen);
-    }
-    ss << "-";
-    for (i = 0; i < 4; i++) {
-      ss << dis(gen);
-    }
-    ss << "-4";
-    for (i = 0; i < 3; i++) {
-      ss << dis(gen);
-    }
-    ss << "-";
-    ss << dis2(gen);
-    for (i = 0; i < 3; i++) {
-      ss << dis(gen);
-    }
-    ss << "-";
-    for (i = 0; i < 12; i++) {
-      ss << dis(gen);
-    };
-    return ss.str();
+static std::string normalizeDecimalString(const std::string& original) {
+  if (original.find('.') != std::string::npos) {
+    std::string str(original);
+    rtrimInPlace(str, "0");
+    rtrimInPlace(str, ".");
+    return str;
+  } else {
+    return original;
   }
+}
 
-  static std::vector<std::string> split(const std::string& in, char sep) {
-    std::vector<std::string> r;
-    r.reserve(std::count(in.begin(), in.end(), sep) + 1);
-    for (auto p = in.begin();; ++p) {
-      auto q = p;
-      p = std::find(p, in.end(), sep);
-      r.emplace_back(q, p);
-      if (p == in.end()) {
-        return r;
+static std::string normalizeDecimalString(const char* data) {
+  std::string str(data);
+  if (str.find('.') != std::string::npos) {
+    rtrimInPlace(str, "0");
+    rtrimInPlace(str, ".");
+  }
+  return str;
+}
+
+static std::string leftPadTo(const std::string& str, const size_t padToLength, const char paddingChar) {
+  std::string copy = str;
+  if (padToLength > copy.size()) {
+    copy.insert(0, padToLength - copy.size(), paddingChar);
+  }
+  return copy;
+}
+
+static std::string rightPadTo(const std::string& str, const size_t padToLength, const char paddingChar) {
+  std::string copy = str;
+  if (padToLength > copy.size()) {
+    copy.append(padToLength - copy.size(), paddingChar);
+  }
+  return copy;
+}
+}
+;
+
+class UtilTime CCAPI_FINAL{
+  public : static std::string convertFIXTimeToISO(const std::string& fixTime){//  convert 20200925-15:55:28.093490622 to 2020-09-25T15:55:28.093490622Z
+                                                                              std::string output;
+output += fixTime.substr(0, 4);
+output += "-";
+output += fixTime.substr(4, 2);
+output += "-";
+output += fixTime.substr(6, 2);
+output += "T";
+output += fixTime.substr(9);
+output += "Z";
+return output;
+}
+
+static std::string convertTimePointToFIXTime(const TimePoint& tp) {
+  int year, month, day, hour, minute, second, millisecond;
+  timePointToParts(tp, year, month, day, hour, minute, second, millisecond);
+  std::string output;
+  output += std::to_string(year);
+  auto monthStr = std::to_string(month);
+  output += std::string(2 - monthStr.length(), '0');
+  output += monthStr;
+  auto dayStr = std::to_string(day);
+  output += std::string(2 - dayStr.length(), '0');
+  output += dayStr;
+  output += "-";
+  auto hourStr = std::to_string(hour);
+  output += std::string(2 - hourStr.length(), '0');
+  output += hourStr;
+  output += ":";
+  auto minuteStr = std::to_string(minute);
+  output += std::string(2 - minuteStr.length(), '0');
+  output += minuteStr;
+  output += ":";
+  auto secondStr = std::to_string(second);
+  output += std::string(2 - secondStr.length(), '0');
+  output += secondStr;
+  output += ".";
+  auto millisecondStr = std::to_string(millisecond);
+  output += std::string(3 - millisecondStr.length(), '0');
+  output += millisecondStr;
+  return output;
+}
+
+template <typename T = std::chrono::milliseconds>
+static void timePointToParts(TimePoint tp, int& year, int& month, int& day, int& hour, int& minute, int& second, int& fractionalSecond) {
+  auto epoch_sec = std::chrono::time_point_cast<std::chrono::seconds>(tp).time_since_epoch().count();
+  auto day_sec = epoch_sec - (epoch_sec % 86400);
+  auto days_since_epoch = day_sec / 86400;
+  // see http://howardhinnant.github.io/date_algorithms.html
+  days_since_epoch += 719468;
+  const unsigned era = (days_since_epoch >= 0 ? days_since_epoch : days_since_epoch - 146096) / 146097;
+  const unsigned doe = static_cast<unsigned>(days_since_epoch - era * 146097);
+  const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  year = static_cast<unsigned>(yoe) + era * 400;
+  const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  const unsigned mp = (5 * doy + 2) / 153;
+  day = doy - (153 * mp + 2) / 5 + 1;
+  month = mp + (mp < 10 ? 3 : -9);
+  year += month <= 2;
+  auto in_day = tp - std::chrono::duration_cast<T>(std::chrono::seconds(day_sec));
+  auto in_day_sec_original = std::chrono::time_point_cast<std::chrono::seconds>(in_day).time_since_epoch().count();
+  auto in_day_sec = in_day_sec_original;
+  hour = in_day_sec / 3600;
+  in_day_sec -= hour * 3600;
+  minute = in_day_sec / 60;
+  second = in_day_sec - minute * 60;
+  auto in_day_fractional_second = in_day - std::chrono::duration_cast<T>(std::chrono::seconds(in_day_sec_original));
+  fractionalSecond = std::chrono::time_point_cast<T>(in_day_fractional_second).time_since_epoch().count();
+}
+
+static TimePoint now() {
+  auto now = std::chrono::system_clock::now();
+  return TimePoint(now);
+}
+
+static TimePoint parse(const std::string& input) {
+  std::tm time{};
+  time.tm_year = std::strtol(&input[0], nullptr, 10) - 1900;
+  time.tm_mon = std::strtol(&input[5], nullptr, 10) - 1;
+  time.tm_mday = std::strtol(&input[8], nullptr, 10);
+  if (input.length() > 10) {
+    time.tm_hour = std::strtol(&input[11], nullptr, 10);
+    time.tm_min = std::strtol(&input[14], nullptr, 10);
+    time.tm_sec = std::strtol(&input[17], nullptr, 10);
+  }
+  time.tm_isdst = 0;
+  long nanoseconds = 0;
+  if (input.length() > 20) {
+    std::string trail = input.substr(20);
+    if (trail.back() == 'Z') {
+      trail.pop_back();
+    }
+    if (!trail.empty()) {
+      if (trail.length() > 9) {
+        throw std::invalid_argument("input too long");
       }
+      nanoseconds = std::stoll(UtilString::rightPadTo(trail, 9, '0'));
     }
   }
+  return TimePoint(std::chrono::system_clock::from_time_t(timegm(&time))) + std::chrono::nanoseconds(nanoseconds);
+}
 
-  static std::vector<std::string> split(const std::string& original, const std::string& delimiter) {
-    std::string s = original;
-    std::vector<std::string> output;
-    size_t pos = 0;
-    std::string token;
-    while ((pos = s.find(delimiter)) != std::string::npos) {
-      token = s.substr(0, pos);
-      output.emplace_back(std::move(token));
-      s.erase(0, pos + delimiter.length());
-    }
-    output.emplace_back(std::move(s));
-    return output;
+static TimePoint makeTimePoint(const std::pair<long long, long long>& timePair) {
+  auto tp = TimePoint(std::chrono::duration<int64_t>(timePair.first));
+  tp += std::chrono::nanoseconds(timePair.second);
+  return tp;
+}
+
+static TimePoint makeTimePointMilli(const std::pair<long long, long long>& timePair) {
+  auto tp = TimePoint(std::chrono::milliseconds(timePair.first));
+  tp += std::chrono::nanoseconds(timePair.second);
+  return tp;
+}
+
+static std::pair<long long, long long> divide(const TimePoint& tp) {
+  auto then = tp.time_since_epoch();
+  auto s = std::chrono::duration_cast<std::chrono::seconds>(then);
+  then -= s;
+  auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(then);
+  return std::make_pair(s.count(), ns.count());
+}
+
+static std::pair<long long, long long> divide(const std::string& seconds) {
+  if (seconds.find('.') != std::string::npos) {
+    std::string secondsCopy = seconds;
+    UtilString::rtrimInPlace(secondsCopy, '0');
+    UtilString::rtrimInPlace(secondsCopy, '.');
+    auto found = secondsCopy.find('.');
+    return std::make_pair(std::stoll(secondsCopy.substr(0, found)),
+                          found != std::string::npos ? std::stoll(UtilString::rightPadTo(secondsCopy.substr(found + 1), 9, '0')) : 0);
+  } else {
+    return std::make_pair(std::stoll(seconds), 0);
   }
+}
 
-  static std::set<std::string> splitToSet(const std::string& original, const std::string& delimiter) {
-    std::string s = original;
-    std::set<std::string> output;
-    size_t pos = 0;
-    std::string token;
-    while ((pos = s.find(delimiter)) != std::string::npos) {
-      token = s.substr(0, pos);
-      output.insert(std::move(token));
-      s.erase(0, pos + delimiter.length());
-    }
-    output.insert(std::move(s));
-    return output;
+static std::pair<long long, long long> divideMilli(const std::string& milliseconds) {
+  if (milliseconds.find('.') != std::string::npos) {
+    std::string millisecondsCopy = milliseconds;
+    UtilString::rtrimInPlace(millisecondsCopy, '0');
+    UtilString::rtrimInPlace(millisecondsCopy, '.');
+    auto found = millisecondsCopy.find('.');
+    return std::make_pair(std::stoll(millisecondsCopy.substr(0, found)),
+                          found != std::string::npos ? std::stoll(UtilString::rightPadTo(millisecondsCopy.substr(found + 1), 6, '0')) : 0);
+  } else {
+    return std::make_pair(std::stoll(milliseconds), 0);
   }
+}
 
-  static std::string join(const std::vector<std::string>& strings, const std::string& delimiter) {
-    switch (strings.size()) {
-      case 0:
-        return "";
-      case 1:
-        return strings.at(0);
-      default:
-        std::ostringstream joined;
-        std::copy(strings.begin(), strings.end() - 1, std::ostream_iterator<std::string>(joined, delimiter.c_str()));
-        joined << *strings.rbegin();
-        return joined.str();
-    }
+static std::string convertMillisecondsStrToSecondsStr(const std::string& milliseconds) {
+  std::string output;
+  if (milliseconds.length() >= 4) {
+    output = milliseconds;
+    output.insert(milliseconds.length() - 3, 1, '.');
+  } else {
+    output = "0.";
+    output += std::string(3 - milliseconds.length(), '0');
+    output += milliseconds;
+    output = UtilString::normalizeDecimalString(output);
   }
+  return output;
+}
 
-  static std::string join(const std::set<std::string>& strings, const std::string& delimiter) {
-    std::vector<std::string> strings_vector(strings.begin(), strings.end());
-    return join(strings_vector, delimiter);
-  }
+static std::pair<long long, long long> divideNanoWhole(const std::string& nanoseconds) {
+  return std::make_pair(std::stoll(nanoseconds.substr(0, nanoseconds.length() - 9)), std::stoll(nanoseconds.substr(nanoseconds.length() - 9)));
+}
 
-  static std::string toUpper(const std::string& input) {
-    std::string output(input);
-    std::transform(output.begin(), output.end(), output.begin(), ::toupper);
-    return output;
-  }
-
-  static std::string toLower(const std::string& input) {
-    std::string output(input);
-    std::transform(output.begin(), output.end(), output.begin(), ::tolower);
-    return output;
-  }
-
-  static std::string ltrim(const std::string& original, const std::string& chars = "\t\n\v\f\r ") {
-    std::string str = original;
-    str.erase(0, str.find_first_not_of(chars));
-    return str;
-  }
-
-  static std::string ltrim(const std::string& original, char c) {
-    std::string str = original;
-    str.erase(0, str.find_first_not_of(c));
-    return str;
-  }
-
-  static void ltrimInPlace(std::string& str, const std::string& chars = "\t\n\v\f\r ") { str.erase(0, str.find_first_not_of(chars)); }
-
-  static void ltrimInPlace(std::string& str, char c) { str.erase(0, str.find_first_not_of(c)); }
-
-  static std::string rtrim(const std::string& original, const std::string& chars = "\t\n\v\f\r ") {
-    std::string str = original;
-    str.erase(str.find_last_not_of(chars) + 1);
-    return str;
-  }
-
-  static std::string rtrim(const std::string& original, char c) {
-    std::string str = original;
-    str.erase(str.find_last_not_of(c) + 1);
-    return str;
-  }
-
-  static void rtrimInPlace(std::string& str, const std::string& chars = "\t\n\v\f\r ") { str.erase(str.find_last_not_of(chars) + 1); }
-
-  static void rtrimInPlace(std::string& str, char c) { str.erase(str.find_last_not_of(c) + 1); }
-
-  static std::string trim(const std::string& original, const std::string& chars = "\t\n\v\f\r ") { return ltrim(rtrim(original, chars), chars); }
-
-  static std::string trim(const std::string& original, char c) { return ltrim(rtrim(original, c), c); }
-
-  static void trimInPlace(std::string& str, const std::string& chars = "\t\n\v\f\r ") {
-    rtrimInPlace(str, chars);
-    ltrimInPlace(str, chars);
-  }
-
-  static void trimInPlace(std::string& str, char c) {
-    rtrimInPlace(str, c);
-    ltrimInPlace(str, c);
-  }
-
-  static std::string firstNCharacter(const std::string& str, const size_t n) {
-    if (str.length() > n) {
-      return str.substr(0, n) + "...";
-    } else {
-      return str;
-    }
-  }
-
-  static std::string normalizeDecimalString(const std::string& original) {
-    if (original.find('.') != std::string::npos) {
-      std::string str(original);
-      rtrimInPlace(str, "0");
-      rtrimInPlace(str, ".");
-      return str;
-    } else {
-      return original;
-    }
-  }
-
-  static std::string normalizeDecimalString(const char* data) {
-    std::string str(data);
-    if (str.find('.') != std::string::npos) {
-      rtrimInPlace(str, "0");
-      rtrimInPlace(str, ".");
-    }
-    return str;
-  }
-
-  static std::string leftPadTo(const std::string& str, const size_t padToLength, const char paddingChar) {
-    std::string copy = str;
-    if (padToLength > copy.size()) {
-      copy.insert(0, padToLength - copy.size(), paddingChar);
-    }
-    return copy;
-  }
-
-  static std::string rightPadTo(const std::string& str, const size_t padToLength, const char paddingChar) {
-    std::string copy = str;
-    if (padToLength > copy.size()) {
-      copy.append(padToLength - copy.size(), paddingChar);
-    }
-    return copy;
-  }
-};
-
-class UtilTime CCAPI_FINAL {
- public:
-  static std::string convertFIXTimeToISO(const std::string& fixTime) {
-    //  convert 20200925-15:55:28.093490622 to 2020-09-25T15:55:28.093490622Z
-    std::string output;
-    output += fixTime.substr(0, 4);
-    output += "-";
-    output += fixTime.substr(4, 2);
-    output += "-";
-    output += fixTime.substr(6, 2);
-    output += "T";
-    output += fixTime.substr(9);
-    output += "Z";
-    return output;
-  }
-
-  static std::string convertTimePointToFIXTime(const TimePoint& tp) {
-    int year, month, day, hour, minute, second, millisecond;
-    timePointToParts(tp, year, month, day, hour, minute, second, millisecond);
-    std::string output;
-    output += std::to_string(year);
-    auto monthStr = std::to_string(month);
-    output += std::string(2 - monthStr.length(), '0');
-    output += monthStr;
-    auto dayStr = std::to_string(day);
-    output += std::string(2 - dayStr.length(), '0');
-    output += dayStr;
-    output += "-";
-    auto hourStr = std::to_string(hour);
-    output += std::string(2 - hourStr.length(), '0');
-    output += hourStr;
-    output += ":";
-    auto minuteStr = std::to_string(minute);
-    output += std::string(2 - minuteStr.length(), '0');
-    output += minuteStr;
-    output += ":";
-    auto secondStr = std::to_string(second);
-    output += std::string(2 - secondStr.length(), '0');
-    output += secondStr;
+template <typename T = std::chrono::nanoseconds>
+static std::string getISOTimestamp(const TimePoint& tp) {
+  int year, month, day, hour, minute, second, fractionalSecond;
+  timePointToParts<T>(tp, year, month, day, hour, minute, second, fractionalSecond);
+  std::string output;
+  output += std::to_string(year);
+  output += "-";
+  auto monthStr = std::to_string(month);
+  output += std::string(2 - monthStr.length(), '0');
+  output += monthStr;
+  output += "-";
+  auto dayStr = std::to_string(day);
+  output += std::string(2 - dayStr.length(), '0');
+  output += dayStr;
+  output += "T";
+  auto hourStr = std::to_string(hour);
+  output += std::string(2 - hourStr.length(), '0');
+  output += hourStr;
+  output += ":";
+  auto minuteStr = std::to_string(minute);
+  output += std::string(2 - minuteStr.length(), '0');
+  output += minuteStr;
+  output += ":";
+  auto secondStr = std::to_string(second);
+  output += std::string(2 - secondStr.length(), '0');
+  output += secondStr;
+  if (!std::is_same<T, std::chrono::seconds>::value) {
     output += ".";
-    auto millisecondStr = std::to_string(millisecond);
-    output += std::string(3 - millisecondStr.length(), '0');
-    output += millisecondStr;
-    return output;
-  }
-
-  template <typename T = std::chrono::milliseconds>
-  static void timePointToParts(TimePoint tp, int& year, int& month, int& day, int& hour, int& minute, int& second, int& fractionalSecond) {
-    auto epoch_sec = std::chrono::time_point_cast<std::chrono::seconds>(tp).time_since_epoch().count();
-    auto day_sec = epoch_sec - (epoch_sec % 86400);
-    auto days_since_epoch = day_sec / 86400;
-    // see http://howardhinnant.github.io/date_algorithms.html
-    days_since_epoch += 719468;
-    const unsigned era = (days_since_epoch >= 0 ? days_since_epoch : days_since_epoch - 146096) / 146097;
-    const unsigned doe = static_cast<unsigned>(days_since_epoch - era * 146097);
-    const unsigned yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    year = static_cast<unsigned>(yoe) + era * 400;
-    const unsigned doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    const unsigned mp = (5 * doy + 2) / 153;
-    day = doy - (153 * mp + 2) / 5 + 1;
-    month = mp + (mp < 10 ? 3 : -9);
-    year += month <= 2;
-    auto in_day = tp - std::chrono::duration_cast<T>(std::chrono::seconds(day_sec));
-    auto in_day_sec_original = std::chrono::time_point_cast<std::chrono::seconds>(in_day).time_since_epoch().count();
-    auto in_day_sec = in_day_sec_original;
-    hour = in_day_sec / 3600;
-    in_day_sec -= hour * 3600;
-    minute = in_day_sec / 60;
-    second = in_day_sec - minute * 60;
-    auto in_day_fractional_second = in_day - std::chrono::duration_cast<T>(std::chrono::seconds(in_day_sec_original));
-    fractionalSecond = std::chrono::time_point_cast<T>(in_day_fractional_second).time_since_epoch().count();
-  }
-
-  static TimePoint now() {
-    auto now = std::chrono::system_clock::now();
-    return TimePoint(now);
-  }
-
-  static TimePoint parse(const std::string& input) {
-    std::tm time{};
-    time.tm_year = std::strtol(&input[0], nullptr, 10) - 1900;
-    time.tm_mon = std::strtol(&input[5], nullptr, 10) - 1;
-    time.tm_mday = std::strtol(&input[8], nullptr, 10);
-    if (input.length() > 10) {
-      time.tm_hour = std::strtol(&input[11], nullptr, 10);
-      time.tm_min = std::strtol(&input[14], nullptr, 10);
-      time.tm_sec = std::strtol(&input[17], nullptr, 10);
+    auto fractionalSecondStr = std::to_string(fractionalSecond);
+    int padToLength;
+    if (std::is_same<T, std::chrono::nanoseconds>::value) {
+      padToLength = 9;
+    } else if (std::is_same<T, std::chrono::microseconds>::value) {
+      padToLength = 6;
+    } else if (std::is_same<T, std::chrono::milliseconds>::value) {
+      padToLength = 3;
     }
-    time.tm_isdst = 0;
-    long nanoseconds = 0;
-    if (input.length() > 20) {
-      std::string trail = input.substr(20);
-      if (trail.back() == 'Z') {
-        trail.pop_back();
-      }
-      if (!trail.empty()) {
-        if (trail.length() > 9) {
-          throw std::invalid_argument("input too long");
-        }
-        nanoseconds = std::stoll(UtilString::rightPadTo(trail, 9, '0'));
-      }
-    }
-    return TimePoint(std::chrono::system_clock::from_time_t(timegm(&time))) + std::chrono::nanoseconds(nanoseconds);
+    output += std::string(padToLength - fractionalSecondStr.length(), '0');
+    // UtilString::rtrimInPlace(fractionalSecondStr, '0');
+    output += fractionalSecondStr;
   }
+  output += "Z";
+  return output;
+}
 
-  static TimePoint makeTimePoint(const std::pair<long long, long long>& timePair) {
-    auto tp = TimePoint(std::chrono::duration<int64_t>(timePair.first));
-    tp += std::chrono::nanoseconds(timePair.second);
-    return tp;
-  }
+static int getUnixTimestamp(const TimePoint& tp) {
+  auto then = tp.time_since_epoch();
+  auto s = std::chrono::duration_cast<std::chrono::seconds>(then);
+  return s.count();
+}
 
-  static TimePoint makeTimePointMilli(const std::pair<long long, long long>& timePair) {
-    auto tp = TimePoint(std::chrono::milliseconds(timePair.first));
-    tp += std::chrono::nanoseconds(timePair.second);
-    return tp;
-  }
+static TimePoint makeTimePointFromMilliseconds(long long milliseconds) { return TimePoint(std::chrono::milliseconds(milliseconds)); }
 
-  static std::pair<long long, long long> divide(const TimePoint& tp) {
-    auto then = tp.time_since_epoch();
-    auto s = std::chrono::duration_cast<std::chrono::seconds>(then);
-    then -= s;
-    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(then);
-    return std::make_pair(s.count(), ns.count());
-  }
-
-  static std::pair<long long, long long> divide(const std::string& seconds) {
-    if (seconds.find('.') != std::string::npos) {
-      std::string secondsCopy = seconds;
-      UtilString::rtrimInPlace(secondsCopy, '0');
-      UtilString::rtrimInPlace(secondsCopy, '.');
-      auto found = secondsCopy.find('.');
-      return std::make_pair(std::stoll(secondsCopy.substr(0, found)),
-                            found != std::string::npos ? std::stoll(UtilString::rightPadTo(secondsCopy.substr(found + 1), 9, '0')) : 0);
-    } else {
-      return std::make_pair(std::stoll(seconds), 0);
-    }
-  }
-
-  static std::pair<long long, long long> divideMilli(const std::string& milliseconds) {
-    if (milliseconds.find('.') != std::string::npos) {
-      std::string millisecondsCopy = milliseconds;
-      UtilString::rtrimInPlace(millisecondsCopy, '0');
-      UtilString::rtrimInPlace(millisecondsCopy, '.');
-      auto found = millisecondsCopy.find('.');
-      return std::make_pair(std::stoll(millisecondsCopy.substr(0, found)),
-                            found != std::string::npos ? std::stoll(UtilString::rightPadTo(millisecondsCopy.substr(found + 1), 6, '0')) : 0);
-    } else {
-      return std::make_pair(std::stoll(milliseconds), 0);
-    }
-  }
-
-  static std::string convertMillisecondsStrToSecondsStr(const std::string& milliseconds) {
-    std::string output;
-    if (milliseconds.length() >= 4) {
-      output = milliseconds;
-      output.insert(milliseconds.length() - 3, 1, '.');
-    } else {
-      output = "0.";
-      output += std::string(3 - milliseconds.length(), '0');
-      output += milliseconds;
-      output = UtilString::normalizeDecimalString(output);
-    }
-    return output;
-  }
-
-  static std::pair<long long, long long> divideNanoWhole(const std::string& nanoseconds) {
-    return std::make_pair(std::stoll(nanoseconds.substr(0, nanoseconds.length() - 9)), std::stoll(nanoseconds.substr(nanoseconds.length() - 9)));
-  }
-
-  template <typename T = std::chrono::nanoseconds>
-  static std::string getISOTimestamp(const TimePoint& tp) {
-    int year, month, day, hour, minute, second, fractionalSecond;
-    timePointToParts<T>(tp, year, month, day, hour, minute, second, fractionalSecond);
-    std::string output;
-    output += std::to_string(year);
-    output += "-";
-    auto monthStr = std::to_string(month);
-    output += std::string(2 - monthStr.length(), '0');
-    output += monthStr;
-    output += "-";
-    auto dayStr = std::to_string(day);
-    output += std::string(2 - dayStr.length(), '0');
-    output += dayStr;
-    output += "T";
-    auto hourStr = std::to_string(hour);
-    output += std::string(2 - hourStr.length(), '0');
-    output += hourStr;
-    output += ":";
-    auto minuteStr = std::to_string(minute);
-    output += std::string(2 - minuteStr.length(), '0');
-    output += minuteStr;
-    output += ":";
-    auto secondStr = std::to_string(second);
-    output += std::string(2 - secondStr.length(), '0');
-    output += secondStr;
-    if (!std::is_same<T, std::chrono::seconds>::value) {
-      output += ".";
-      auto fractionalSecondStr = std::to_string(fractionalSecond);
-      int padToLength;
-      if (std::is_same<T, std::chrono::nanoseconds>::value) {
-        padToLength = 9;
-      } else if (std::is_same<T, std::chrono::microseconds>::value) {
-        padToLength = 6;
-      } else if (std::is_same<T, std::chrono::milliseconds>::value) {
-        padToLength = 3;
-      }
-      output += std::string(padToLength - fractionalSecondStr.length(), '0');
-      // UtilString::rtrimInPlace(fractionalSecondStr, '0');
-      output += fractionalSecondStr;
-    }
-    output += "Z";
-    return output;
-  }
-
-  static int getUnixTimestamp(const TimePoint& tp) {
-    auto then = tp.time_since_epoch();
-    auto s = std::chrono::duration_cast<std::chrono::seconds>(then);
-    return s.count();
-  }
-
-  static TimePoint makeTimePointFromMilliseconds(long long milliseconds) { return TimePoint(std::chrono::milliseconds(milliseconds)); }
-
-  static TimePoint makeTimePointFromSeconds(long seconds) { return TimePoint(std::chrono::seconds(seconds)); }
-};
+static TimePoint makeTimePointFromSeconds(long seconds) { return TimePoint(std::chrono::seconds(seconds)); }
+}
+;
 
 class UtilAlgorithm CCAPI_FINAL {
  public:
@@ -725,71 +724,70 @@ inline uint_fast32_t UtilAlgorithm::crc(InputIterator first, InputIterator last)
                           [](uint_fast32_t checksum, std::uint_fast8_t value) { return table[(checksum ^ value) & 0xFFu] ^ (checksum >> 8); });
 }
 
-class UtilSystem CCAPI_FINAL {
- public:
-  static bool getEnvAsBool(const std::string variableName, const bool defaultValue = false) {
-    const char* env_p = std::getenv(variableName.c_str());
-    if (env_p) {
-      return UtilString::toLower(std::string(env_p)) == "true";
-    } else {
-      return defaultValue;
-    }
-  }
+class UtilSystem CCAPI_FINAL{
+  public : static bool getEnvAsBool(const std::string variableName, const bool defaultValue = false){const char* env_p = std::getenv(variableName.c_str());
+if (env_p) {
+  return UtilString::toLower(std::string(env_p)) == "true";
+} else {
+  return defaultValue;
+}
+}
 
-  static std::string getEnvAsString(const std::string variableName, const std::string defaultValue = "") {
-    const char* env_p = std::getenv(variableName.c_str());
-    if (env_p) {
-      return std::string(env_p);
-    } else {
-      return defaultValue;
-    }
+static std::string getEnvAsString(const std::string variableName, const std::string defaultValue = "") {
+  const char* env_p = std::getenv(variableName.c_str());
+  if (env_p) {
+    return std::string(env_p);
+  } else {
+    return defaultValue;
   }
+}
 
-  static int getEnvAsInt(const std::string variableName, const int defaultValue = 0) {
-    const char* env_p = std::getenv(variableName.c_str());
-    if (env_p) {
-      return std::stoi(std::string(env_p));
-    } else {
-      return defaultValue;
-    }
+static int getEnvAsInt(const std::string variableName, const int defaultValue = 0) {
+  const char* env_p = std::getenv(variableName.c_str());
+  if (env_p) {
+    return std::stoi(std::string(env_p));
+  } else {
+    return defaultValue;
   }
+}
 
-  static long getEnvAsLong(const std::string variableName, const long defaultValue = 0) {
-    const char* env_p = std::getenv(variableName.c_str());
-    if (env_p) {
-      return std::stol(std::string(env_p));
-    } else {
-      return defaultValue;
-    }
+static long getEnvAsLong(const std::string variableName, const long defaultValue = 0) {
+  const char* env_p = std::getenv(variableName.c_str());
+  if (env_p) {
+    return std::stol(std::string(env_p));
+  } else {
+    return defaultValue;
   }
+}
 
-  static float getEnvAsFloat(const std::string variableName, const float defaultValue = 0) {
-    const char* env_p = std::getenv(variableName.c_str());
-    if (env_p) {
-      return std::stof(std::string(env_p));
-    } else {
-      return defaultValue;
-    }
+static float getEnvAsFloat(const std::string variableName, const float defaultValue = 0) {
+  const char* env_p = std::getenv(variableName.c_str());
+  if (env_p) {
+    return std::stof(std::string(env_p));
+  } else {
+    return defaultValue;
   }
+}
 
-  static double getEnvAsDouble(const std::string variableName, const double defaultValue = 0) {
-    const char* env_p = std::getenv(variableName.c_str());
-    if (env_p) {
-      return std::stod(std::string(env_p));
-    } else {
-      return defaultValue;
-    }
+static double getEnvAsDouble(const std::string variableName, const double defaultValue = 0) {
+  const char* env_p = std::getenv(variableName.c_str());
+  if (env_p) {
+    return std::stod(std::string(env_p));
+  } else {
+    return defaultValue;
   }
+}
 
-  static bool checkEnvExist(const std::string& variableName) {
-    const char* env_p = std::getenv(variableName.c_str());
-    if (env_p) {
-      return true;
-    } else {
-      return false;
-    }
+static bool checkEnvExist(const std::string& variableName) {
+  const char* env_p = std::getenv(variableName.c_str());
+  if (env_p) {
+    return true;
+  } else {
+    return false;
   }
-};
+}
+}
+;
 
 inline std::string size_tToString(const size_t& t) {
   std::stringstream ss;

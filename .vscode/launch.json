@@ -1,0 +1,17 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch KrakenL3Collector",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/build/RelWithDebInfo/kraken_l3_collector.exe",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "preLaunchTask": "CMake: build",
+            "envFile": "${workspaceFolder}/.env",
+            "console": "integratedTerminal",
+        }
+    ]
+}

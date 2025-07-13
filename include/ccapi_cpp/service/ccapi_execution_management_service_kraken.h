@@ -31,10 +31,60 @@ class ExecutionManagementServiceKraken : public ExecutionManagementService {
   }
 
   virtual ~ExecutionManagementServiceKraken() {}
+
+  // In ccapi_cpp/service/ccapi_execution_management_service_kraken.h
+  // Inside the 'ExecutionManagementServiceKraken' class, replacing the previous override
+
 #ifndef CCAPI_EXPOSE_INTERNAL
 
  protected:
 #endif
+
+  void logonToExchange(std::shared_ptr<WsConnection> wsConnectionPtr, const TimePoint& now, const std::map<std::string, std::string>& credential) override {
+    CCAPI_LOGGER_FUNCTION_ENTER;
+    WsConnection& wsConnection = *wsConnectionPtr;
+
+    // Use a set to find the unique channel names required by all subscriptions.
+    std::set<std::string> uniqueChannelNames;
+    for (const auto& subscription : wsConnection.subscriptionList) {
+      const auto& field = subscription.getField();
+      if (field == CCAPI_EM_ORDER_UPDATE) {
+        uniqueChannelNames.insert("openOrders");
+      } else if (field == CCAPI_EM_PRIVATE_TRADE) {
+        uniqueChannelNames.insert("ownTrades");
+      }
+    }
+
+    // Retrieve the token that was stored after the successful REST call.
+    const std::string& token = this->extraPropertyByConnectionIdMap.at(wsConnection.id).at("token");
+
+    // Now, iterate through the unique channel names and send ONE subscription message for each.
+    for (const auto& name : uniqueChannelNames) {
+      rj::Document document;
+      document.SetObject();
+      rj::Document::AllocatorType& allocator = document.GetAllocator();
+      document.AddMember("event", rj::Value("subscribe").Move(), allocator);
+
+      rj::Value subscriptionObject(rj::kObjectType);
+      subscriptionObject.AddMember("name", rj::Value(name.c_str(), allocator).Move(), allocator);
+      subscriptionObject.AddMember("token", rj::Value(token.c_str(), allocator).Move(), allocator);
+      document.AddMember("subscription", subscriptionObject, allocator);
+
+      rj::StringBuffer stringBuffer;
+      rj::Writer<rj::StringBuffer> writer(stringBuffer);
+      document.Accept(writer);
+      std::string sendString = stringBuffer.GetString();
+
+      CCAPI_LOGGER_FINE("Sending unique subscription: " + sendString);
+      ErrorCode ec;
+      this->send(wsConnectionPtr, sendString, ec);
+      if (ec) {
+        // Since we don't have a specific correlation ID here, we can't tie failure to a single sub.
+        // This is a limitation we accept for this optimization.
+        this->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, ec, "unique subscribe");
+      }
+    }
+  }
 
   void pingOnApplicationLevel(std::shared_ptr<WsConnection> wsConnectionPtr, ErrorCode& ec) override {
     auto now = UtilTime::now();
@@ -47,7 +97,7 @@ class ExecutionManagementServiceKraken : public ExecutionManagementService {
                                                std::string& headerString, std::string& path, std::string& queryString, std::string& body, const TimePoint& now,
                                                const std::map<std::string, std::string>& credential) override {
     auto apiSecret = mapGetWithDefault(credential, this->apiSecretName);
-    auto noncePlusBody = std::string(req.base().at("Nonce")) + body;
+    auto noncePlusBody = std::string(req.base()["Nonce"]) + body;
     auto target = path;
     if (!queryString.empty()) {
       target += queryString;
@@ -112,7 +162,8 @@ class ExecutionManagementServiceKraken : public ExecutionManagementService {
     req.set(beast::http::field::content_type, "application/x-www-form-urlencoded; charset=utf-8");
     auto apiKey = mapGetWithDefault(credential, this->apiKeyName);
     req.set("API-Key", apiKey);
-    std::string nonce = std::to_string(this->generateNonce(now, request.getIndex()));
+    static int prepareConnectCallCount = 0;
+    std::string nonce = std::to_string(this->generateNonce(now, prepareConnectCallCount++));
     switch (request.getOperation()) {
       case Request::Operation::GENERIC_PRIVATE_REQUEST: {
         ExecutionManagementService::convertRequestForRestGenericPrivateRequest(req, request, now, symbolId, credential);
@@ -264,6 +315,7 @@ class ExecutionManagementServiceKraken : public ExecutionManagementService {
   }
 
   void prepareConnect(std::shared_ptr<WsConnection> wsConnectionPtr) override {
+    std::cout << "[EMS_KRAKEN_DEBUG] prepareConnect called." << std::endl;  // MODIFIED
     auto now = UtilTime::now();
     auto hostPort = this->extractHostFromUrl(this->baseUrlRest);
     std::string host = hostPort.first;
@@ -274,6 +326,8 @@ class ExecutionManagementServiceKraken : public ExecutionManagementService {
     req.method(http::verb::post);
     std::string target = this->getWebSocketsTokenTarget;
     req.target(target);
+    std::cout << "[EMS_KRAKEN_DEBUG] Token request target: " << target << std::endl;  // MODIFIED
+
     auto credential = wsConnectionPtr->subscriptionList.at(0).getCredential();
     if (credential.empty()) {
       credential = this->credentialDefault;
@@ -283,30 +337,75 @@ class ExecutionManagementServiceKraken : public ExecutionManagementService {
     req.set(beast::http::field::content_type, "application/x-www-form-urlencoded; charset=utf-8");
     std::string body;
     std::string nonce = std::to_string(this->generateNonce(now));
+    std::cout << "[EMS_KRAKEN_DEBUG] Generated nonce for token request: " << nonce << std::endl;  // MODIFIED
     this->appendParam(body, {}, nonce);
     body.pop_back();
+    std::cout << "[EMS_KRAKEN_DEBUG] Token request body: " << body << std::endl;  // MODIFIED
     this->signRequest(req, body, credential, nonce);
+    std::cout << "[EMS_KRAKEN_DEBUG] Sending GetWebSocketsToken request." << std::endl;  // MODIFIED
+
     this->sendRequest(
-        req, [wsConnectionPtr, that = shared_from_base<ExecutionManagementServiceKraken>()](const beast::error_code& ec) { that->onFail_(wsConnectionPtr); },
-        [wsConnectionPtr, that = shared_from_base<ExecutionManagementServiceKraken>()](const http::response<http::string_body>& res) {
+        req,
+        // onError (HTTP layer error or explicit error from underlying send)
+        [wsConnectionPtr, that = shared_from_base<ExecutionManagementServiceKraken>()](const beast::error_code& ec) {
+          std::cout << "[EMS_KRAKEN_DEBUG] GetWebSocketsToken HTTP request failed (beast error). Code: " << ec.value() << ", Message: " << ec.message()
+                    << std::endl;  // MODIFIED
+          that->onFail_(wsConnectionPtr);
+        },
+        // onSuccess (HTTP response received)
+        [wsConnectionPtr, that = shared_from_base<ExecutionManagementServiceKraken>() /*, original_req_body = body NO NEED TO CAPTURE BODY FOR COUT */](
+            const http::response<http::string_body>& res) {
           int statusCode = res.result_int();
-          std::string body = res.body();
+          std::string response_body_str = res.body();
+          std::cout << "[EMS_KRAKEN_DEBUG] GetWebSocketsToken HTTP response received. Status: " << statusCode << ", Body: " << response_body_str
+                    << std::endl;  // MODIFIED
+
           if (statusCode / 100 == 2) {
+            std::cout << "[EMS_KRAKEN_DEBUG] Token response is 2xx." << std::endl;  // MODIFIED
             try {
               rj::Document document;
-              document.Parse<rj::kParseNumbersAsStringsFlag>(body.c_str());
+              document.Parse<rj::kParseNumbersAsStringsFlag>(response_body_str.c_str());
               if (document.HasMember("result") && document["result"].HasMember("token")) {
                 std::string token = document["result"]["token"].GetString();
+                std::cout << "[EMS_KRAKEN_DEBUG] Token successfully parsed from response: " << UtilString::firstNCharacter(token, 10) << "..."
+                          << std::endl;  // MODIFIED (shortened token display)
+
+                // ***** YOUR MODIFICATION TO DISPATCH EVENT *****
+                Event event;
+                event.setType(Event::Type::RESPONSE);
+                Message message;
+                message.setType(Message::Type::CUSTOM);
+                message.setTimeReceived(UtilTime::now());
+                message.setCorrelationIdList({"KRAKEN_WS_TOKEN"});
+                Element element;
+                element.insert(CCAPI_HTTP_BODY, response_body_str);
+                message.setElementList({element});
+                event.addMessage(message);
+                std::cout << "[EMS_KRAKEN_DEBUG] Dispatching token response event for KRAKEN_WS_TOKEN." << std::endl;  // MODIFIED
+                that->eventHandler(event, nullptr);
+                // ***** END OF MODIFICATION *****
+
                 wsConnectionPtr->setUrl(that->baseUrlWs);
                 that->connect(wsConnectionPtr);
                 that->extraPropertyByConnectionIdMap[wsConnectionPtr->id].insert({
                     {"token", token},
                 });
+                std::cout << "[EMS_KRAKEN_DEBUG] Initiated WebSocket connect with token." << std::endl;  // MODIFIED
+              } else {
+                std::cout << "[EMS_KRAKEN_DEBUG] GetWebSocketsToken: 2xx response but 'result.token' field not found. Response Body: " << response_body_str
+                          << std::endl;  // MODIFIED
+                that->onFail_(wsConnectionPtr);
               }
               return;
             } catch (const std::runtime_error& e) {
-              CCAPI_LOGGER_ERROR(std::string("e.what() = ") + e.what());
+              std::cout << "[EMS_KRAKEN_DEBUG] GetWebSocketsToken: JSON parse error: " << e.what() << ", Response Body: " << response_body_str
+                        << std::endl;  // MODIFIED
+              that->onFail_(wsConnectionPtr);
             }
+          } else {
+            std::cout << "[EMS_KRAKEN_DEBUG] GetWebSocketsToken: HTTP Error " << statusCode << ". Response Body: " << response_body_str
+                      << std::endl;  // MODIFIED
+            that->onFail_(wsConnectionPtr);
           }
           that->onFail_(wsConnectionPtr);
         },
@@ -346,7 +445,11 @@ class ExecutionManagementServiceKraken : public ExecutionManagementService {
     std::string textMessage(textMessageView);
     rj::Document document;
     document.Parse<rj::kParseNumbersAsStringsFlag>(textMessage.c_str());
+
+    // This calls a helper function that does the actual parsing.
+    // We keep this logic from the original file as it is correct.
     Event event = this->createEvent(wsConnectionPtr, subscription, textMessageView, document, timeReceived);
+
     if (!event.getMessageList().empty()) {
       this->eventHandler(event, nullptr);
     }

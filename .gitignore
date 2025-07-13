@@ -9,6 +9,11 @@ build/
 *_dev.env
 *_dev_*.env
 
+# Environment variables
+.env
+*.env
+.env.*
+
 # General
 .DS_Store
 .AppleDouble

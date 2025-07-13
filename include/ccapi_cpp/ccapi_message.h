@@ -55,6 +55,7 @@ class Message CCAPI_FINAL {
     SUBSCRIPTION_STARTED,
     SUBSCRIPTION_FAILURE,
     SUBSCRIPTION_FAILURE_DUE_TO_CONNECTION_FAILURE,
+    SUBSCRIPTION_ENDED,  // CHANGED: Added SUBSCRIPTION_ENDED here.
     SESSION_CONNECTION_UP,
     SESSION_CONNECTION_DOWN,
     INCORRECT_STATE_FOUND,
@@ -132,6 +133,10 @@ class Message CCAPI_FINAL {
         break;
       case Type::SUBSCRIPTION_FAILURE_DUE_TO_CONNECTION_FAILURE:
         output = "SUBSCRIPTION_FAILURE_DUE_TO_CONNECTION_FAILURE";
+        break;
+      // CHANGED: Added the corresponding 'case' for the new enum member.
+      case Type::SUBSCRIPTION_ENDED:
+        output = "SUBSCRIPTION_ENDED";
         break;
       case Type::SESSION_CONNECTION_UP:
         output = "SESSION_CONNECTION_UP";

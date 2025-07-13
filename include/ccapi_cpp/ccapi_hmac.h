@@ -10,7 +10,7 @@
  *      various SHA algorithms.
  */
 
-//#include "sha.h"
+// #include "sha.h"
 /**************************** sha.h ****************************/
 /******************* See RFC 4634 for details ******************/
 #ifndef _SHA_H_
@@ -40,6 +40,7 @@
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <stdint.h>
+
 #include <iomanip>
 /*
  * If you do not have the ISO standard stdint.h header file, then you
@@ -54,6 +55,7 @@
 namespace yubico {
 #ifndef _SHA_enum_
 #define _SHA_enum_
+
 /*
  *  All SHA functions return one of these values.
  */
@@ -172,6 +174,7 @@ typedef struct SHA512Context SHA384Context;
  */
 typedef struct USHAContext {
   int whichSha; /* which SHA is being used */
+
   union {
     SHA1Context sha1Context;
     SHA224Context sha224Context;
@@ -193,6 +196,7 @@ typedef struct HMACContext {
   unsigned char k_opad[USHA_Max_Message_Block_Size];
   /* outer padding - key XORd with opad */
 } HMACContext;
+
 /*
  *  Function Prototypes
  */
@@ -277,9 +281,9 @@ int hmacResult(HMACContext *ctx, uint8_t digest[USHAMaxHashSize]);
 #define SHA_Maj(x, y, z) (((x) & (y)) ^ ((x) & (z)) ^ ((y) & (z)))
 
 #else /* USE_MODIFIED_MACROS */
-                                                  /*
-                                                   * The following definitions are equivalent and potentially faster.
-                                                   */
+/*
+ * The following definitions are equivalent and potentially faster.
+ */
 
 #define SHA_Ch(x, y, z) (((x) & ((y) ^ (z))) ^ (z))
 #define SHA_Maj(x, y, z) (((x) & ((y) | (z))) | ((y) & (z)))
@@ -325,8 +329,8 @@ int hmacResult(HMACContext *ctx, uint8_t digest[USHAMaxHashSize]);
  *      uses SHA1FinalBits() to hash the final few bits of the input.
  */
 
-//#include "sha.h"
-//#include "sha-private.h"
+// #include "sha.h"
+// #include "sha-private.h"
 
 /*
  *  Define the SHA1 circular left shift macro
@@ -674,6 +678,7 @@ static void SHA1ProcessMessageBlock(SHA1Context *context) {
 
   context->Message_Block_Index = 0;
 }
+
 /*************************** sha224-256.c ***************************/
 /********************* See RFC 4634 for details *********************/
 /*
@@ -712,8 +717,8 @@ static void SHA1ProcessMessageBlock(SHA1Context *context) {
  *   final few bits of the input.
  */
 
-//#include "sha.h"
-//#include "sha-private.h"
+// #include "sha.h"
+// #include "sha-private.h"
 /* Define the SHA shift, rotate left and rotate right macro */
 #define SHA256_SHR(bits, word) ((word) >> (bits))
 #define SHA256_ROTL(bits, word) (((word) << (bits)) | ((word) >> (32 - (bits))))
@@ -1178,6 +1183,7 @@ static int SHA224_256ResultN(SHA256Context *context, uint8_t Message_Digest[], i
 
   return shaSuccess;
 }
+
 /*************************** sha384-512.c ***************************/
 /********************* See RFC 4634 for details *********************/
 /*
@@ -1219,8 +1225,8 @@ static int SHA224_256ResultN(SHA256Context *context, uint8_t Message_Digest[], i
  *
  */
 
-//#include "sha.h"
-//#include "sha-private.h"
+// #include "sha.h"
+// #include "sha-private.h"
 
 #ifdef USE_32BIT_ONLY
 /*
@@ -1232,16 +1238,20 @@ static int SHA224_256ResultN(SHA256Context *context, uint8_t Message_Digest[], i
 /*
  * Define shift, rotate left and rotate right functions
  */
-#define SHA512_SHR(bits, word, ret)                                         \
-  (/* (((uint64_t)((word))) >> (bits)) */                                   \
-   (ret)[0] = (((bits) < 32) && ((bits) >= 0)) ? ((word)[0] >> (bits)) : 0, \
-   (ret)[1] =                                                               \
-       ((bits) > 32) ? ((word)[0] >> ((bits)-32)) : ((bits) == 32) ? (word)[0] : ((bits) >= 0) ? (((word)[0] << (32 - (bits))) | ((word)[1] >> (bits))) : 0)
+#define SHA512_SHR(bits, word, ret)                                                                                                                 \
+  (/* (((uint64_t)((word))) >> (bits)) */                                                                                                           \
+   (ret)[0] = (((bits) < 32) && ((bits) >= 0)) ? ((word)[0] >> (bits)) : 0, (ret)[1] = ((bits) > 32)    ? ((word)[0] >> ((bits) - 32))              \
+                                                                                       : ((bits) == 32) ? (word)[0]                                 \
+                                                                                       : ((bits) >= 0)                                              \
+                                                                                           ? (((word)[0] << (32 - (bits))) | ((word)[1] >> (bits))) \
+                                                                                           : 0)
 
-#define SHA512_SHL(bits, word, ret)                                                                                                                          \
-  (/* (((uint64_t)(word)) << (bits)) */                                                                                                                      \
-   (ret)[0] =                                                                                                                                                \
-       ((bits) > 32) ? ((word)[1] << ((bits)-32)) : ((bits) == 32) ? (word)[1] : ((bits) >= 0) ? (((word)[0] << (bits)) | ((word)[1] >> (32 - (bits)))) : 0, \
+#define SHA512_SHL(bits, word, ret)                                                     \
+  (/* (((uint64_t)(word)) << (bits)) */                                                 \
+   (ret)[0] = ((bits) > 32)    ? ((word)[1] << ((bits) - 32))                           \
+              : ((bits) == 32) ? (word)[1]                                              \
+              : ((bits) >= 0)  ? (((word)[0] << (bits)) | ((word)[1] >> (32 - (bits)))) \
+                               : 0,                                                      \
    (ret)[1] = (((bits) < 32) && ((bits) >= 0)) ? ((word)[1] << (bits)) : 0)
 
 /*
@@ -1342,12 +1352,12 @@ static uint32_t Maj_temp1[2], Maj_temp2[2], Maj_temp3[2], Maj_temp4[2];
    SHA512_XOR(Maj_temp1, Maj_temp4, (ret)))
 
 #else /* !USE_32BIT_ONLY */
-                                                  /*
-                                                   * These definitions are potentially faster equivalents for the ones
-                                                   * used in FIPS-180-2, section 4.1.3.
-                                                   *   ((x & y) ^ (~x & z)) becomes
-                                                   *   ((x & (y ^ z)) ^ z)
-                                                   */
+/*
+ * These definitions are potentially faster equivalents for the ones
+ * used in FIPS-180-2, section 4.1.3.
+ *   ((x & y) ^ (~x & z)) becomes
+ *   ((x & (y ^ z)) ^ z)
+ */
 #define SHA_Ch(x, y, z, ret) ((ret)[0] = (((x)[0] & ((y)[0] ^ (z)[0])) ^ (z)[0]), (ret)[1] = (((x)[1] & ((y)[1] ^ (z)[1])) ^ (z)[1]))
 
 /*
@@ -1407,11 +1417,11 @@ static int SHA384_512Reset(SHA512Context *context, uint64_t H0[]);
 static int SHA384_512ResultN(SHA512Context *context, uint8_t Message_Digest[], int HashSize);
 
 /* Initial Hash Values: FIPS-180-2 sections 5.3.3 and 5.3.4 */
-static uint64_t SHA384_H0[] = {0xCBBB9D5DC1059ED8ll, 0x629A292A367CD507ll, 0x9159015A3070DD17ll, 0x152FECD8F70E5939ll,
-                               0x67332667FFC00B31ll, 0x8EB44A8768581511ll, 0xDB0C2E0D64F98FA7ll, 0x47B5481DBEFA4FA4ll};
+static uint64_t SHA384_H0[] = {0xCBBB9D5DC1059ED8ULL, 0x629A292A367CD507ULL, 0x9159015A3070DD17ULL, 0x152FECD8F70E5939ULL,
+                               0x67332667FFC00B31ULL, 0x8EB44A8768581511ULL, 0xDB0C2E0D64F98FA7ULL, 0x47B5481DBEFA4FA4ULL};
 
-static uint64_t SHA512_H0[] = {0x6A09E667F3BCC908ll, 0xBB67AE8584CAA73Bll, 0x3C6EF372FE94F82Bll, 0xA54FF53A5F1D36F1ll,
-                               0x510E527FADE682D1ll, 0x9B05688C2B3E6C1Fll, 0x1F83D9ABFB41BD6Bll, 0x5BE0CD19137E2179ll};
+static uint64_t SHA512_H0[] = {0x6A09E667F3BCC908ULL, 0xBB67AE8584CAA73BULL, 0x3C6EF372FE94F82BULL, 0xA54FF53A5F1D36F1ULL,
+                               0x510E527FADE682D1ULL, 0x9B05688C2B3E6C1FULL, 0x1F83D9ABFB41BD6BULL, 0x5BE0CD19137E2179ULL};
 
 #endif /* USE_32BIT_ONLY */
 
@@ -1701,9 +1711,9 @@ static void SHA384_512PadMessage(SHA512Context *context, uint8_t Pad_Byte) {
 
   while (context->Message_Block_Index < (SHA512_Message_Block_Size - 16)) context->Message_Block[context->Message_Block_Index++] = 0;
 
-    /*
-     * Store the message length as the last 16 octets
-     */
+  /*
+   * Store the message length as the last 16 octets
+   */
 #ifdef USE_32BIT_ONLY
   context->Message_Block[112] = (uint8_t)(context->Length[0] >> 24);
   context->Message_Block[113] = (uint8_t)(context->Length[0] >> 16);
@@ -1873,18 +1883,20 @@ static void SHA384_512ProcessMessageBlock(SHA512Context *context) {
 
 #else  /* !USE_32BIT_ONLY */
   static const uint64_t K[80] = {
-      0x428A2F98D728AE22ll, 0x7137449123EF65CDll, 0xB5C0FBCFEC4D3B2Fll, 0xE9B5DBA58189DBBCll, 0x3956C25BF348B538ll, 0x59F111F1B605D019ll, 0x923F82A4AF194F9Bll,
-      0xAB1C5ED5DA6D8118ll, 0xD807AA98A3030242ll, 0x12835B0145706FBEll, 0x243185BE4EE4B28Cll, 0x550C7DC3D5FFB4E2ll, 0x72BE5D74F27B896Fll, 0x80DEB1FE3B1696B1ll,
-      0x9BDC06A725C71235ll, 0xC19BF174CF692694ll, 0xE49B69C19EF14AD2ll, 0xEFBE4786384F25E3ll, 0x0FC19DC68B8CD5B5ll, 0x240CA1CC77AC9C65ll, 0x2DE92C6F592B0275ll,
-      0x4A7484AA6EA6E483ll, 0x5CB0A9DCBD41FBD4ll, 0x76F988DA831153B5ll, 0x983E5152EE66DFABll, 0xA831C66D2DB43210ll, 0xB00327C898FB213Fll, 0xBF597FC7BEEF0EE4ll,
-      0xC6E00BF33DA88FC2ll, 0xD5A79147930AA725ll, 0x06CA6351E003826Fll, 0x142929670A0E6E70ll, 0x27B70A8546D22FFCll, 0x2E1B21385C26C926ll, 0x4D2C6DFC5AC42AEDll,
-      0x53380D139D95B3DFll, 0x650A73548BAF63DEll, 0x766A0ABB3C77B2A8ll, 0x81C2C92E47EDAEE6ll, 0x92722C851482353Bll, 0xA2BFE8A14CF10364ll, 0xA81A664BBC423001ll,
-      0xC24B8B70D0F89791ll, 0xC76C51A30654BE30ll, 0xD192E819D6EF5218ll, 0xD69906245565A910ll, 0xF40E35855771202All, 0x106AA07032BBD1B8ll, 0x19A4C116B8D2D0C8ll,
-      0x1E376C085141AB53ll, 0x2748774CDF8EEB99ll, 0x34B0BCB5E19B48A8ll, 0x391C0CB3C5C95A63ll, 0x4ED8AA4AE3418ACBll, 0x5B9CCA4F7763E373ll, 0x682E6FF3D6B2B8A3ll,
-      0x748F82EE5DEFB2FCll, 0x78A5636F43172F60ll, 0x84C87814A1F0AB72ll, 0x8CC702081A6439ECll, 0x90BEFFFA23631E28ll, 0xA4506CEBDE82BDE9ll, 0xBEF9A3F7B2C67915ll,
-      0xC67178F2E372532Bll, 0xCA273ECEEA26619Cll, 0xD186B8C721C0C207ll, 0xEADA7DD6CDE0EB1Ell, 0xF57D4F7FEE6ED178ll, 0x06F067AA72176FBAll, 0x0A637DC5A2C898A6ll,
-      0x113F9804BEF90DAEll, 0x1B710B35131C471Bll, 0x28DB77F523047D84ll, 0x32CAAB7B40C72493ll, 0x3C9EBE0A15C9BEBCll, 0x431D67C49C100D4Cll, 0x4CC5D4BECB3E42B6ll,
-      0x597F299CFC657E2All, 0x5FCB6FAB3AD6FAECll, 0x6C44198C4A475817ll};
+      0x428A2F98D728AE22ULL, 0x7137449123EF65CDULL, 0xB5C0FBCFEC4D3B2FULL, 0xE9B5DBA58189DBBCULL, 0x3956C25BF348B538ULL, 0x59F111F1B605D019ULL,
+      0x923F82A4AF194F9BULL, 0xAB1C5ED5DA6D8118ULL, 0xD807AA98A3030242ULL, 0x12835B0145706FBEULL, 0x243185BE4EE4B28CULL, 0x550C7DC3D5FFB4E2ULL,
+      0x72BE5D74F27B896FULL, 0x80DEB1FE3B1696B1ULL, 0x9BDC06A725C71235ULL, 0xC19BF174CF692694ULL, 0xE49B69C19EF14AD2ULL, 0xEFBE4786384F25E3ULL,
+      0x0FC19DC68B8CD5B5ULL, 0x240CA1CC77AC9C65ULL, 0x2DE92C6F592B0275ULL, 0x4A7484AA6EA6E483ULL, 0x5CB0A9DCBD41FBD4ULL, 0x76F988DA831153B5ULL,
+      0x983E5152EE66DFABULL, 0xA831C66D2DB43210ULL, 0xB00327C898FB213FULL, 0xBF597FC7BEEF0EE4ULL, 0xC6E00BF33DA88FC2ULL, 0xD5A79147930AA725ULL,
+      0x06CA6351E003826FULL, 0x142929670A0E6E70ULL, 0x27B70A8546D22FFCULL, 0x2E1B21385C26C926ULL, 0x4D2C6DFC5AC42AEDULL, 0x53380D139D95B3DFULL,
+      0x650A73548BAF63DEULL, 0x766A0ABB3C77B2A8ULL, 0x81C2C92E47EDAEE6ULL, 0x92722C851482353BULL, 0xA2BFE8A14CF10364ULL, 0xA81A664BBC423001ULL,
+      0xC24B8B70D0F89791ULL, 0xC76C51A30654BE30ULL, 0xD192E819D6EF5218ULL, 0xD69906245565A910ULL, 0xF40E35855771202AULL, 0x106AA07032BBD1B8ULL,
+      0x19A4C116B8D2D0C8ULL, 0x1E376C085141AB53ULL, 0x2748774CDF8EEB99ULL, 0x34B0BCB5E19B48A8ULL, 0x391C0CB3C5C95A63ULL, 0x4ED8AA4AE3418ACBULL,
+      0x5B9CCA4F7763E373ULL, 0x682E6FF3D6B2B8A3ULL, 0x748F82EE5DEFB2FCULL, 0x78A5636F43172F60ULL, 0x84C87814A1F0AB72ULL, 0x8CC702081A6439ECULL,
+      0x90BEFFFA23631E28ULL, 0xA4506CEBDE82BDE9ULL, 0xBEF9A3F7B2C67915ULL, 0xC67178F2E372532BULL, 0xCA273ECEEA26619CULL, 0xD186B8C721C0C207ULL,
+      0xEADA7DD6CDE0EB1EULL, 0xF57D4F7FEE6ED178ULL, 0x06F067AA72176FBAULL, 0x0A637DC5A2C898A6ULL, 0x113F9804BEF90DAEULL, 0x1B710B35131C471BULL,
+      0x28DB77F523047D84ULL, 0x32CAAB7B40C72493ULL, 0x3C9EBE0A15C9BEBCULL, 0x431D67C49C100D4CULL, 0x4CC5D4BECB3E42B6ULL, 0x597F299CFC657E2AULL,
+      0x5FCB6FAB3AD6FAECULL, 0x6C44198C4A475817ULL};
   int t, t8;                       /* Loop counter */
   uint64_t temp1, temp2;           /* Temporary word value */
   uint64_t W[80];                  /* Word sequence */
@@ -2033,6 +2045,7 @@ static int SHA384_512ResultN(SHA512Context *context, uint8_t Message_Digest[], i
 
   return shaSuccess;
 }
+
 /**************************** usha.c ****************************/
 /******************** See RFC 4634 for details ******************/
 /*
@@ -2040,7 +2053,7 @@ static int SHA384_512ResultN(SHA512Context *context, uint8_t Message_Digest[], i
  *     This file implements a unified interface to the SHA algorithms.
  */
 
-//#include "sha.h"
+// #include "sha.h"
 
 /*
  *  USHAReset
@@ -2294,6 +2307,7 @@ inline int USHAHashSizeBits(enum SHAversion whichSha) {
       return SHA512HashSizeBits;
   }
 }
+
 /*
  *  hmac
  *
@@ -2495,6 +2509,7 @@ inline int hmacResult(HMACContext *ctx, uint8_t *digest) {
 }
 #include "ccapi_cpp/ccapi_logger.h"
 #include "ccapi_cpp/ccapi_macro.h"
+
 namespace ccapi {
 class Hmac CCAPI_FINAL {
   // https://github.com/Yubico/yubico-c-client/blob/ykclient-2.15/sha384-512.c
@@ -2507,6 +2522,7 @@ class Hmac CCAPI_FINAL {
     SHA384,
     SHA512,
   };
+
   static std::string hmacYubico(const ShaVersion shaVersion, const std::string &key, const std::string &msg, bool returnHex = false) {
     yubico::SHAversion whichSha{};
     int shaHashSize{};
@@ -2553,6 +2569,7 @@ class Hmac CCAPI_FINAL {
     }
     return ss.str();
   }
+
   static std::string hmac(const ShaVersion shaVersion, const std::string &key, const std::string &msg, bool returnHex = false) {
 #ifdef CCAPI_SHA_USE_OPENSSL
     if (shaVersion == ShaVersion::SHA256) {

@@ -634,6 +634,7 @@ class Session {
   }
 
   virtual void subscribe(Subscription& subscription) {
+    std::cout << "!!!!!!!!!!!!!!!!!!!! SESSION::SUBSCRIBE (SINGLE) CALLED !!!!!!!!!!!!!!!!!!!!" << std::endl;
     std::vector<Subscription> subscriptionList;
     subscriptionList.push_back(subscription);
     this->subscribe(subscriptionList);
@@ -641,6 +642,7 @@ class Session {
 
   virtual void subscribe(std::vector<Subscription>& subscriptionList) {
     CCAPI_LOGGER_FUNCTION_ENTER;
+    std::cout << "[SESSION_DEBUG] subscribe(vector) entered. Num subs: " << subscriptionList.size() << std::endl;  // ADDED
     for (auto& subscription : subscriptionList) {
       auto exchange = subscription.getExchange();
       if (exchange == CCAPI_EXCHANGE_NAME_BYBIT) {
@@ -673,16 +675,24 @@ class Session {
     for (const auto& subscription : subscriptionList) {
       auto serviceName = subscription.getServiceName();
       subscriptionListByServiceNameMap[serviceName].push_back(subscription);
+      std::cout << "[SESSION_DEBUG] Grouping subscription: CorrID=" << subscription.getCorrelationId() << ", Service=" << serviceName
+                << ", Exchange=" << subscription.getExchange() << ", Field=" << subscription.getField() << std::endl;
     }
     for (const auto& x : subscriptionListByServiceNameMap) {
       auto serviceName = x.first;
       auto subscriptionList = x.second;
+      std::cout << "[SESSION_DEBUG] Processing service group: " << serviceName << std::endl;  // ADDED
+      if (serviceName == "market_data_l3" && this->serviceByServiceNameExchangeMap.find(serviceName) == this->serviceByServiceNameExchangeMap.end()) {
+        this->serviceByServiceNameExchangeMap[serviceName] = this->serviceByServiceNameExchangeMap.at(CCAPI_MARKET_DATA);
+      }
       if (this->serviceByServiceNameExchangeMap.find(serviceName) == this->serviceByServiceNameExchangeMap.end()) {
+        std::cout << "[SESSION_DEBUG] ERROR: Service " << serviceName << " not found in serviceByServiceNameExchangeMap." << std::endl;  // ADDED
         this->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE,
                       "please enable service: " + serviceName + ", and the exchanges that you want");
         return;
       }
-      if (serviceName == CCAPI_MARKET_DATA) {
+      if (serviceName == CCAPI_MARKET_DATA || serviceName == "market_data_l3") {
+        std::cout << "[SESSION_DEBUG] Service is CCAPI_MARKET_DATA." << std::endl;
         std::unordered_set<std::string> unsupportedExchangeFieldSet;
         auto exchangeFieldMap = this->sessionConfigs.getExchangeFieldMap();
         CCAPI_LOGGER_DEBUG("exchangeFieldMap = " + toString(exchangeFieldMap));
@@ -712,34 +722,45 @@ class Session {
         CCAPI_LOGGER_TRACE("subscriptionListByExchangeMap = " + toString(subscriptionListByExchangeMap));
         for (auto& subscriptionListByExchange : subscriptionListByExchangeMap) {
           auto exchange = subscriptionListByExchange.first;
-          auto subscriptionList = subscriptionListByExchange.second;
+          // auto subscriptionList = subscriptionListByExchange.second;
+          std::cout << "[SESSION_DEBUG] MARKET_DATA: Processing exchange: " << exchange << std::endl;  // ADDED
           std::map<std::string, std::shared_ptr<Service>>& serviceByExchangeMap = this->serviceByServiceNameExchangeMap.at(serviceName);
           if (serviceByExchangeMap.find(exchange) == serviceByExchangeMap.end()) {
+            std::cout << "[SESSION_DEBUG] MARKET_DATA: ERROR: Exchange " << exchange << " not found for service " << serviceName << std::endl;  // ADDED
             this->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, "please enable exchange: " + exchange);
             return;
           }
+          std::cout << "[SESSION_DEBUG] MARKET_DATA: Calling service->subscribe for exchange " << exchange << std::endl;  // ADDED
           serviceByExchangeMap.at(exchange)->subscribe(subscriptionList);
         }
       } else if (serviceName == CCAPI_EXECUTION_MANAGEMENT) {
+        std::cout << "[SESSION_DEBUG] Service is CCAPI_EXECUTION_MANAGEMENT." << std::endl;  // ADDED
         std::map<std::string, std::vector<Subscription>> subscriptionListByExchangeMap;
         for (const auto& subscription : subscriptionList) {
           auto exchange = subscription.getExchange();
           subscriptionListByExchangeMap[exchange].push_back(subscription);
         }
         CCAPI_LOGGER_TRACE("subscriptionListByExchangeMap = " + toString(subscriptionListByExchangeMap));
-        for (auto& subscriptionListByExchange : subscriptionListByExchangeMap) {
-          auto exchange = subscriptionListByExchange.first;
-          auto subscriptionList = subscriptionListByExchange.second;
+        std::cout << "[SESSION_DEBUG] EXECUTION_MANAGEMENT: Grouped by exchange: " << toString(subscriptionListByExchangeMap) << std::endl;  // ADDED
+        for (auto& pair_ : subscriptionListByExchangeMap) {  // Changed iteration variable name
+          auto exchange = pair_.first;
+          auto specificSubscriptionListForExchange = pair_.second;  // This is the list for *this* service AND *this* exchange
+          std::cout << "[SESSION_DEBUG] EXECUTION_MANAGEMENT: Processing exchange: " << exchange << std::endl;  // ADDED
           std::map<std::string, std::shared_ptr<Service>>& serviceByExchangeMap = this->serviceByServiceNameExchangeMap.at(serviceName);
           if (serviceByExchangeMap.find(exchange) == serviceByExchangeMap.end()) {
+            std::cout << "[SESSION_DEBUG] EXECUTION_MANAGEMENT: ERROR: Exchange " << exchange << " not found for service " << serviceName
+                      << std::endl;  // ADDED
             this->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, "please enable exchange: " + exchange);
             return;
           }
-          serviceByExchangeMap.at(exchange)->subscribe(subscriptionList);
+          std::cout << "[SESSION_DEBUG] EXECUTION_MANAGEMENT: Calling service->subscribe for exchange " << exchange << " with "
+                    << specificSubscriptionListForExchange.size() << " subs." << std::endl;   // ADDED
+          serviceByExchangeMap.at(exchange)->subscribe(specificSubscriptionListForExchange);  // Pass the correctly filtered list
         }
       }
     }
     CCAPI_LOGGER_FUNCTION_EXIT;
+    std::cout << "[SESSION_DEBUG] subscribe(vector) exited." << std::endl;  // ADDED
   }
 
   virtual void subscribeByFix(Subscription& subscription) {

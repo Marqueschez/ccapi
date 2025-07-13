@@ -52,9 +52,50 @@ class Subscription CCAPI_FINAL {
     } else if (std::includes(executionManagementSubscriptionFieldSet.begin(), executionManagementSubscriptionFieldSet.end(), this->fieldSet.begin(),
                              this->fieldSet.end())) {
       this->serviceName = CCAPI_EXECUTION_MANAGEMENT;
-    } else if (field == CCAPI_MARKET_DEPTH || field == CCAPI_TRADE || field == CCAPI_AGG_TRADE || field == CCAPI_CANDLESTICK) {
+    } else if (field == CCAPI_MARKET_DEPTH || field == CCAPI_TRADE || field == CCAPI_AGG_TRADE || field == CCAPI_CANDLESTICK || field == "level3") {
       this->serviceName = CCAPI_MARKET_DATA;
     }
+    CCAPI_LOGGER_TRACE("this->serviceName = " + this->serviceName);
+    if (this->correlationId.empty()) {
+      this->correlationId = UtilString::generateRandomString(CCAPI_CORRELATION_ID_GENERATED_LENGTH);
+    }
+  }
+
+  Subscription(std::string serviceName, std::string exchange, std::string instrument, std::string field, std::string options, std::string correlationId,
+               std::map<std::string, std::string> credential)
+      : serviceName(std::move(serviceName)),
+        exchange(std::move(exchange)),
+        instrument(std::move(instrument)),
+        field(std::move(field)),
+        correlationId(std::move(correlationId)),
+        credential(std::move(credential)) {
+    // We must copy the logic from the original constructor to properly initialize the Subscription object.
+    auto originalInstrumentSet = UtilString::splitToSet(this->instrument, ",");
+    std::copy_if(originalInstrumentSet.begin(), originalInstrumentSet.end(), std::inserter(this->instrumentSet, this->instrumentSet.end()),
+                 [](const std::string& value) { return !value.empty(); });
+    auto originalFieldSet = UtilString::splitToSet(this->field, ",");
+    std::copy_if(originalFieldSet.begin(), originalFieldSet.end(), std::inserter(this->fieldSet, this->fieldSet.end()),
+                 [](const std::string& value) { return !value.empty(); });
+    if (this->field == CCAPI_GENERIC_PUBLIC_SUBSCRIPTION) {
+      this->rawOptions = options;
+    } else {
+      std::vector<std::string> optionList;
+      if (!options.empty()) {
+        optionList = UtilString::split(options, "&");
+      }
+      this->optionMap[CCAPI_MARKET_DEPTH_MAX] = CCAPI_MARKET_DEPTH_MAX_DEFAULT;
+      this->optionMap[CCAPI_CONFLATE_INTERVAL_MILLISECONDS] = CCAPI_CONFLATE_INTERVAL_MILLISECONDS_DEFAULT;
+      this->optionMap[CCAPI_CONFLATE_GRACE_PERIOD_MILLISECONDS] = CCAPI_CONFLATE_GRACE_PERIOD_MILLISECONDS_DEFAULT;
+      this->optionMap[CCAPI_MARKET_DEPTH_RETURN_UPDATE] = CCAPI_MARKET_DEPTH_RETURN_UPDATE_DEFAULT;
+      this->optionMap[CCAPI_FETCH_MARKET_DEPTH_INITIAL_SNAPSHOT_DELAY_MILLISECONDS] = CCAPI_FETCH_MARKET_DEPTH_INITIAL_SNAPSHOT_DELAY_MILLISECONDS_DEFAULT;
+      this->optionMap[CCAPI_CANDLESTICK_INTERVAL_SECONDS] = CCAPI_CANDLESTICK_INTERVAL_SECONDS_DEFAULT;
+      for (const auto& option : optionList) {
+        auto optionKeyValue = UtilString::split(option, "=");
+        this->optionMap[optionKeyValue.at(0)] = optionKeyValue.at(1);
+      }
+    }
+    // Note that we have REMOVED the automatic serviceName detection logic.
+    // The serviceName is already set from the constructor argument.
     CCAPI_LOGGER_TRACE("this->serviceName = " + this->serviceName);
     if (this->correlationId.empty()) {
       this->correlationId = UtilString::generateRandomString(CCAPI_CORRELATION_ID_GENERATED_LENGTH);

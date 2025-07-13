@@ -86,6 +86,8 @@ class MarketDataMessage CCAPI_FINAL {
     CLOSE_PRICE = 9,
     VOLUME = 10,
     QUOTE_VOLUME = 11,
+    SIDE = 12,      // CHANGED: Added SIDE for L3 order book data.
+    ORDER_ID = 13,  // CHANGED: Added ORDER_ID for L3 order book data.
   };
 
   static std::string dataFieldTypeToString(DataFieldType dataFieldType) {
@@ -126,6 +128,13 @@ class MarketDataMessage CCAPI_FINAL {
         break;
       case DataFieldType::QUOTE_VOLUME:
         output = "QUOTE_VOLUME";
+        break;
+      // CHANGED: Added the corresponding 'case' statements for the new enum members.
+      case DataFieldType::SIDE:
+        output = "SIDE";
+        break;
+      case DataFieldType::ORDER_ID:
+        output = "ORDER_ID";
         break;
       default:
         CCAPI_LOGGER_FATAL(CCAPI_UNSUPPORTED_VALUE);

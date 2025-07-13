@@ -201,6 +201,7 @@ class SessionConfigs CCAPI_FINAL {
     for (auto const& fieldWebsocketChannel : fieldWebsocketChannelMapKraken) {
       this->exchangeFieldMap[CCAPI_EXCHANGE_NAME_KRAKEN].push_back(fieldWebsocketChannel.first);
     }
+    this->exchangeFieldMap[CCAPI_EXCHANGE_NAME_KRAKEN].push_back("level3");  // MODIFICATION
     for (auto const& fieldWebsocketChannel : fieldWebsocketChannelMapKrakenFutures) {
       this->exchangeFieldMap[CCAPI_EXCHANGE_NAME_KRAKEN_FUTURES].push_back(fieldWebsocketChannel.first);
     }

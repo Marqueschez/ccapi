@@ -48,33 +48,51 @@ class ExecutionManagementService : public Service {
 
   // each subscription creates a unique websocket connection
   void subscribe(std::vector<Subscription>& subscriptionList) override {
-    CCAPI_LOGGER_FUNCTION_ENTER;
-    CCAPI_LOGGER_DEBUG("this->baseUrlWs = " + this->baseUrlWs);
-    if (this->shouldContinue.load()) {
-      for (auto& subscription : subscriptionList) {
-        boost::asio::post(*this->serviceContextPtr->ioContextPtr, [that = shared_from_base<ExecutionManagementService>(), subscription]() mutable {
-          auto now = UtilTime::now();
-          subscription.setTimeSent(now);
-          auto credential = subscription.getCredential();
-          if (credential.empty()) {
-            credential = that->credentialDefault;
-          }
+    std::cout << "[EMS_BASE_DEBUG] ExecutionManagementService::subscribe (MODIFIED) entered. Num subs: " << subscriptionList.size() << std::endl;
+    std::cout << "[EMS_BASE_DEBUG] this->baseUrlWs = " << this->baseUrlWs << std::endl;
 
-          std::shared_ptr<beast::websocket::stream<beast::ssl_stream<beast::tcp_stream>>> streamPtr(nullptr);
-          try {
-            streamPtr = that->createWsStream(that->serviceContextPtr->ioContextPtr, that->serviceContextPtr->sslContextPtr);
-          } catch (const beast::error_code& ec) {
-            CCAPI_LOGGER_TRACE("fail");
-            that->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, ec, "create stream", {subscription.getCorrelationId()});
-            return;
-          }
-          std::shared_ptr<WsConnection> wsConnectionPtr(new WsConnection(that->baseUrlWs, "", {subscription}, credential, streamPtr));
-          CCAPI_LOGGER_WARN("about to subscribe with new wsConnectionPtr " + toString(*wsConnectionPtr));
-          that->prepareConnect(wsConnectionPtr);
-        });
+    if (this->shouldContinue.load()) {
+      if (subscriptionList.empty()) {
+        std::cout << "[EMS_BASE_DEBUG] Subscription list is empty, exiting." << std::endl;
+        return;
       }
+
+      // Post a single task to handle all subscriptions for this service
+      boost::asio::post(*this->serviceContextPtr->ioContextPtr, [that = shared_from_base<ExecutionManagementService>(),
+                                                                 subscriptionList_copy = subscriptionList /* capture by copy */]() mutable {
+        std::cout << "[EMS_BASE_DEBUG_ASYNC] Grouped async task started for " << subscriptionList_copy.size() << " subscriptions." << std::endl;
+
+        // Use the credentials from the first subscription as representative. They should all be the same for a given service.
+        auto credential = subscriptionList_copy.at(0).getCredential();
+        if (credential.empty()) {
+          credential = that->credentialDefault;
+        }
+        std::cout << "[EMS_BASE_DEBUG_ASYNC] Credentials prepared." << std::endl;
+
+        std::shared_ptr<beast::websocket::stream<beast::ssl_stream<beast::tcp_stream>>> streamPtr(nullptr);
+        try {
+          std::cout << "[EMS_BASE_DEBUG_ASYNC] Attempting to create WsStream." << std::endl;
+          streamPtr = that->createWsStream(that->serviceContextPtr->ioContextPtr, that->serviceContextPtr->sslContextPtr);
+          std::cout << "[EMS_BASE_DEBUG_ASYNC] WsStream created successfully." << std::endl;
+        } catch (const beast::error_code& ec) {
+          std::cerr << "[EMS_BASE_DEBUG_ASYNC] EXCEPTION in createWsStream: " << ec.message() << std::endl;
+          std::vector<std::string> correlationIdList;
+          for (const auto& sub : subscriptionList_copy) {
+            correlationIdList.push_back(sub.getCorrelationId());
+          }
+          that->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, ec, "create stream", correlationIdList);
+          return;
+        }
+
+        // Create ONE WsConnection object that holds ALL the subscriptions
+        std::cout << "[EMS_BASE_DEBUG_ASYNC] Creating single WsConnection object for all subs." << std::endl;
+        std::shared_ptr<WsConnection> wsConnectionPtr(new WsConnection(that->baseUrlWs, "", subscriptionList_copy, credential, streamPtr));
+
+        std::cout << "[EMS_BASE_DEBUG_ASYNC] About to call prepareConnect with the grouped WsConnectionPtr. URL: " << wsConnectionPtr->getUrl() << std::endl;
+        that->prepareConnect(wsConnectionPtr);  // This will now call prepareConnect just once.
+      });
     }
-    CCAPI_LOGGER_FUNCTION_EXIT;
+    std::cout << "[EMS_BASE_DEBUG] ExecutionManagementService::subscribe (MODIFIED) exited." << std::endl;
   }
 
   static std::map<std::string, std::string> convertHeaderStringToMap(const std::string& input) {
