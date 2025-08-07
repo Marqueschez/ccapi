@@ -171,6 +171,9 @@ class Subscription CCAPI_FINAL {
   void setInstrumentType(const std::string& instrumentType) { this->instrumentType = instrumentType; }
 
   void setMarginType(const std::string& marginType) { this->marginType = marginType; }
+
+  void setOption(const std::string& key, const std::string& value) { this->optionMap[key] = value; }
+
   enum class Status {
     UNKNOWN,
     SUBSCRIBING,

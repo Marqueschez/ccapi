@@ -165,6 +165,10 @@ class Service : public std::enable_shared_from_this<Service> {
     throw std::runtime_error(errorMessage);
   }
 
+  virtual void unsubscribe(const std::vector<Subscription>& subscriptionList) {
+    // Base implementation can be empty or handle generic cleanup
+  }
+
   virtual void subscribe(std::vector<Subscription>& subscriptionList) {}
 
   virtual void convertRequestForRest(http::request<http::string_body>& req, const Request& request, const TimePoint& now, const std::string& symbolId,

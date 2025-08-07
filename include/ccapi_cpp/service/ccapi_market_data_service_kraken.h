@@ -10,6 +10,9 @@
 #include "ccapi_cpp/service/ccapi_market_data_service.h"
 #include "json_utils.h"       // safeGetString()
 #include "nlohmann/json.hpp"  // ANNOTATION: Added for easier parsing of complex L3 messages.
+#include "rapidjson/document.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
 
 namespace ccapi {
 
@@ -30,29 +33,207 @@ class MarketDataServiceKraken : public MarketDataService {
     this->setHostRestFromUrlRest(this->baseUrlRest);
   }
 
-  static constexpr int PRICE_PRECISION = 7;
-  static constexpr int SIZE_PRECISION = 8;
+  void unsubscribe(const std::vector<Subscription>& subscriptionList) override {
+    // This function will now ONLY send the message.
+    CCAPI_LOGGER_INFO("MarketDataServiceKraken::unsubscribe override called to SEND message.");
+    for (const auto& sub : subscriptionList) {
+      // The logic is now perfect for single-instrument unsubscription
+      // because the subscriptionList will only contain the one we need to remove.
+      if (sub.getField() == CCAPI_KRAKEN_FIELD_LEVEL3) {
+        this->sendUnsubscribe(sub);
+      }
+    }
+    // We call the base class unsubscribe to handle removing the subscription
+    // from the internal tracking lists.
+    MarketDataService::unsubscribe(subscriptionList);
+  }
+
+  void sendUnsubscribe(const Subscription& subscription) {
+    CCAPI_LOGGER_INFO("Executing custom sendUnsubscribe for " + subscription.getCorrelationId());
+
+    // Add this debug print to see which host the service *thinks* it should be using
+    std::cerr << "[DEBUG] sendUnsubscribe called. Current service hostWs is: " << this->hostWs << std::endl;
+
+    std::shared_ptr<WsConnection> wsConnectionPtr = nullptr;
+
+    for (const auto& it : this->wsConnectionByIdMap) {
+      auto connection = it.second;
+
+      std::cerr << "[DEBUG] sendUnsubscribe: Checking connection with host " << connection->host << " and url " << connection->url << std::endl;
+
+      for (const auto& sub : connection->subscriptionList) {
+        if (sub.getCorrelationId() == subscription.getCorrelationId()) {
+          wsConnectionPtr = connection;
+          std::cerr << "[DEBUG] sendUnsubscribe: Found matching connection for CorrID " << subscription.getCorrelationId()
+                    << ". Host: " << wsConnectionPtr->host << std::endl;
+          break;
+        }
+      }
+      if (wsConnectionPtr) break;
+    }
+
+    if (!wsConnectionPtr) {
+      CCAPI_LOGGER_ERROR("Could not find WsConnection for unsubscribe request with CorrID: " + subscription.getCorrelationId());
+      return;
+    }
+
+    rj::Document doc;
+    doc.SetObject();
+    auto& allocator = doc.GetAllocator();
+    doc.AddMember("method", rj::Value("unsubscribe").Move(), allocator);
+
+    const auto& optionMap = subscription.getOptionMap();
+    if (optionMap.count("req_id")) {
+      const std::string& req_id_str = optionMap.at("req_id");
+      try {
+        long long req_id_num = std::stoll(req_id_str);
+        doc.AddMember("req_id", req_id_num, allocator);
+      } catch (const std::exception&) {
+        CCAPI_LOGGER_WARN("req_id '" + req_id_str + "' is not a valid number and will not be sent.");
+      }
+    }
+
+    rj::Value params(rj::kObjectType);
+    params.AddMember("channel", rj::Value(CCAPI_WEBSOCKET_KRAKEN_CHANNEL_BOOK_L3, allocator), allocator);
+
+    rj::Value symbolArray(rj::kArrayType);
+    std::string instrument = subscription.getInstrument();
+    symbolArray.PushBack(rj::Value(instrument.c_str(), allocator), allocator);
+    params.AddMember("symbol", symbolArray, allocator);
+
+    if (optionMap.count("depth")) {
+      try {
+        int depth = std::stoi(optionMap.at("depth"));
+        params.AddMember("depth", depth, allocator);
+      } catch (const std::exception& e) {
+        CCAPI_LOGGER_WARN("Could not parse 'depth' from subscription options: " + std::string(e.what()));
+      }
+    }
+
+    if (subscription.getCredential().count("token")) {
+      std::string token = subscription.getCredential().at("token");
+      params.AddMember("token", rj::Value(token.c_str(), allocator), allocator);
+    }
+    doc.AddMember("params", params, allocator);
+
+    rj::StringBuffer buf;
+    rj::Writer<rj::StringBuffer> w(buf);
+    doc.Accept(w);
+    std::string sendString = buf.GetString();
+
+    std::cerr << "[DEBUG] SENDING UNSUBSCRIBE JSON to " << wsConnectionPtr->url << ": " << sendString << std::endl;
+    ErrorCode ec;
+    this->send(wsConnectionPtr, sendString, ec);
+    if (ec) {
+      this->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, ec, "unsubscribe");
+    }
+  }
 
   void subscribe(std::vector<Subscription>& subscriptionList) override {
     bool isL3Service =
         std::any_of(subscriptionList.begin(), subscriptionList.end(), [](const Subscription& sub) { return sub.getServiceName() == "market_data_l3"; });
 
-    if (isL3Service) {
-      this->baseUrlWs = "wss://ws-auth.kraken.com/v2";
-    } else {
-      this->baseUrlWs = "wss://ws.kraken.com/v2";
+    std::string newUrl = isL3Service ? "wss://ws-auth.kraken.com/v2" : "wss://ws.kraken.com/v2";
+
+    if (this->baseUrlWs != newUrl && !this->baseUrlWs.empty()) {
+      CCAPI_LOGGER_INFO("Endpoint changing from " + this->baseUrlWs + " to " + newUrl + ". Closing stale connections.");
+      std::vector<std::shared_ptr<WsConnection>> connectionsToClose;
+      for (const auto& it : this->wsConnectionByIdMap) {
+        if (it.second->host == this->hostWs) {
+          connectionsToClose.push_back(it.second);
+        }
+      }
+      for (auto& conn : connectionsToClose) {
+        ErrorCode ec;
+        this->close(conn, beast::websocket::close_code::normal, beast::websocket::close_reason("endpoint switch"), ec);
+      }
+    }
+    this->baseUrlWs = newUrl;
+    this->setHostWsFromUrlWs(this->baseUrlWs);
+
+    std::shared_ptr<WsConnection> wsConnectionPtr = nullptr;
+    for (const auto& it : this->wsConnectionByIdMap) {
+      if (it.second->host == this->hostWs) {
+        wsConnectionPtr = it.second;
+        break;
+      }
     }
 
-    this->setHostWsFromUrlWs(this->baseUrlWs);
-    MarketDataService::subscribe(subscriptionList);
-  }
+    if (wsConnectionPtr && wsConnectionPtr->status == WsConnection::Status::OPEN) {
+      CCAPI_LOGGER_INFO("Connection for " + this->hostWs + " is already open. Manually sending subscribe and updating state.");
 
-  std::string doubleToStringWithMaxPrecision(double value) {
-    std::ostringstream out;
-    // std::numeric_limits<double>::max_digits10 is the number of digits
-    // needed to uniquely represent any double value.
-    out << std::setprecision(std::numeric_limits<double>::max_digits10) << value;
-    return out.str();
+      for (const auto& sub : subscriptionList) {
+        wsConnectionPtr->subscriptionList.push_back(sub);
+      }
+
+      std::map<std::string, std::vector<std::string>> subsByChannel;
+      for (const auto& sub : subscriptionList) {
+        std::string channelName;
+        if (sub.getField() == CCAPI_KRAKEN_FIELD_LEVEL3) {
+          channelName = CCAPI_WEBSOCKET_KRAKEN_CHANNEL_BOOK_L3;
+        } else if (sub.getField() == CCAPI_TRADE) {
+          channelName = "trade";
+        }
+        if (!channelName.empty()) {
+          subsByChannel[channelName].push_back(sub.getInstrument());
+        }
+      }
+
+      rj::Document docTemplate;
+      docTemplate.SetObject();
+      docTemplate.AddMember("method", rj::Value("subscribe").Move(), docTemplate.GetAllocator());
+
+      for (const auto& pair : subsByChannel) {
+        rj::Document doc;
+        doc.CopyFrom(docTemplate, doc.GetAllocator());
+        auto& a = doc.GetAllocator();
+
+        const std::string& channelName = pair.first;
+        const std::vector<std::string>& symbols = pair.second;
+
+        rj::Value params(rj::kObjectType);
+        params.AddMember("channel", rj::Value(channelName.c_str(), a).Move(), a);
+
+        rj::Value symbolArray(rj::kArrayType);
+        for (const auto& symbol : symbols) {
+          symbolArray.PushBack(rj::Value(symbol.c_str(), a).Move(), a);
+        }
+        params.AddMember("symbol", symbolArray, a);
+
+        if (channelName == CCAPI_WEBSOCKET_KRAKEN_CHANNEL_BOOK_L3) {
+          const auto& sub = subscriptionList.front();
+          const auto& credential = sub.getCredential();
+          if (credential.count("token")) {
+            params.AddMember("token", rj::Value(credential.at("token").c_str(), a).Move(), a);
+          }
+          const auto& optionMap = sub.getOptionMap();
+          if (optionMap.count("depth")) {
+            try {
+              int depth = std::stoi(optionMap.at("depth"));
+              params.AddMember("depth", depth, a);
+            } catch (const std::exception& e) {
+            }
+          }
+          params.AddMember("snapshot", rj::Value(true).Move(), a);
+        }
+
+        doc.AddMember("params", params, a);
+
+        rj::StringBuffer buf;
+        rj::Writer<rj::StringBuffer> w(buf);
+        doc.Accept(w);
+        std::string sendString = buf.GetString();
+
+        ErrorCode ec;
+        this->send(wsConnectionPtr, sendString, ec);
+        if (ec) {
+          this->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, ec, "re-subscribe");
+        }
+      }
+    } else {
+      CCAPI_LOGGER_INFO("No open connection found for " + this->hostWs + ". Deferring to base class subscribe logic.");
+      MarketDataService::subscribe(subscriptionList);
+    }
   }
 
   virtual ~MarketDataServiceKraken() {}
@@ -63,170 +244,186 @@ class MarketDataServiceKraken : public MarketDataService {
 
   void onTextMessage(std::shared_ptr<WsConnection> wsConnectionPtr, boost::beast::string_view textMessageView, const TimePoint& timeReceived) override {
     std::string textMessage(textMessageView);
-    nlohmann::json a;
-    try {
-      a = nlohmann::json::parse(textMessage);
-    } catch (const nlohmann::json::parse_error& e) {
+    // std::cerr << "[WS RAW INBOUND] " << textMessage << std::endl;
+    rj::Document d;
+    d.Parse<rj::kParseNumbersAsStringsFlag>(textMessage.c_str());
+
+    if (d.HasParseError()) {
       CCAPI_LOGGER_WARN("Failed to parse Kraken message as JSON: " + textMessage);
-      MarketDataService::onTextMessage(wsConnectionPtr, textMessageView, timeReceived);
+      MarketDataService::onTextMessage(wsConnectionPtr, boost::beast::string_view(textMessage), timeReceived);
       return;
     }
 
-    std::string channel = a.value("channel", "");
-    std::string method = a.value("method", "");
+    std::string channel = d.HasMember("channel") && d["channel"].IsString() ? d["channel"].GetString() : "";
+    std::string method = d.HasMember("method") && d["method"].IsString() ? d["method"].GetString() : "";
 
-    if (channel == "level3" || channel == "trade" || method == "subscribe") {
+    Event event;
+    std::vector<Message> messageList;
+    // --- NEW: Unsubscribe ACK → SUBSCRIPTION_STATUS ---
+    if (method == "subscribe" || method == "unsubscribe") {
       Event event;
-      std::vector<Message> messageList;
+      event.setType(Event::Type::SUBSCRIPTION_STATUS);
+      Message message;
+      message.setTimeReceived(timeReceived);
+
+      if (d.HasMember("req_id") && d["req_id"].IsInt64()) {
+        long long req_id_num = d["req_id"].GetInt64();
+        message.setCorrelationIdList({std::to_string(req_id_num)});
+      }
+      bool success = d.HasMember("success") && d["success"].IsBool() && d["success"].GetBool();
 
       if (method == "subscribe") {
-        event.setType(Event::Type::SUBSCRIPTION_STATUS);
-        Message message;
-        message.setTimeReceived(timeReceived);
-        message.setType(a.value("success", false) ? Message::Type::SUBSCRIPTION_STARTED : Message::Type::SUBSCRIPTION_FAILURE);
-        Element element;
-        element.insert(a.value("success", false) ? CCAPI_INFO_MESSAGE : CCAPI_ERROR_MESSAGE, textMessage);
-        message.setElementList({element});
-        messageList.push_back(message);
+        message.setType(success ? Message::Type::SUBSCRIPTION_STARTED : Message::Type::SUBSCRIPTION_FAILURE);
+      } else {  // method == "unsubscribe"
+        message.setType(success ? Message::Type::SUBSCRIPTION_ENDED : Message::Type::SUBSCRIPTION_FAILURE);
+      }
 
-      } else if (channel == "level3") {
-        event.setType(Event::Type::SUBSCRIPTION_DATA);
-        if (a.contains("data") && a.is_object() && a.at("data").is_array()) {  // Safety check 'is_object'
-          for (const auto& data_item : a.at("data")) {
-            if (!data_item.is_object() || !data_item.contains("symbol")) continue;  // Safety check
+      Element element;
+      element.insert(success ? CCAPI_INFO_MESSAGE : CCAPI_ERROR_MESSAGE, textMessage);
+      message.setElementList({element});
+      event.setMessageList({message});
+      this->eventHandler(event, nullptr);
+      return;
 
-            Message message;
-            message.setType(Message::Type::MARKET_DATA_EVENTS_MARKET_DEPTH);
-            message.setTimeReceived(timeReceived);
-            message.setRecapType((a.at("type").get<std::string>() == "snapshot") ? Message::RecapType::SOLICITED : Message::RecapType::NONE);
+    } else if (channel == "level3") {
+      event.setType(Event::Type::SUBSCRIPTION_DATA);
 
-            const std::string& receivedSymbol = data_item.at("symbol").get<std::string>();
-            message.setTime(timeReceived);
+      // FIX: This flag MUST be determined at the message level, not outside.
+      // The 'type' field is a top-level property of the JSON message.
+      bool isSnapshot = (d.HasMember("type") && d["type"].IsString() && std::string(d["type"].GetString()) == "snapshot");
 
-            for (const auto& sub : wsConnectionPtr->subscriptionList) {
-              if (sub.getInstrument() == receivedSymbol && sub.getField() == "level3") {
-                message.setCorrelationIdList({sub.getCorrelationId()});
-                break;
-              }
-            }
+      if (d.HasMember("data") && d["data"].IsArray()) {
+        for (const auto& data_item : d["data"].GetArray()) {
+          if (!data_item.IsObject() || !data_item.HasMember("symbol")) continue;
 
-            std::vector<Element> elementList;
-            auto processOrders = [&](const std::string& sideKey, const std::string& sideValue) {
-              if (data_item.contains(sideKey) && data_item.at(sideKey).is_array()) {
-                char conversion_buffer[64];
-
-                for (const auto& order : data_item.at(sideKey)) {
-                  if (!order.is_object()) continue;
-                  double price = 0.0;
-                  if (order.contains("price")) {
-                    price = order["price"].get<double>();
-                  } else if (order.contains("limit_price")) {
-                    price = order["limit_price"].get<double>();
-                  } else {
-                    continue;  // Skip malformed order
-                  }
-
-                  double qty = 0.0;
-                  if (order.contains("qty")) {
-                    qty = order["qty"].get<double>();
-                  } else if (order.contains("order_qty")) {
-                    qty = order["order_qty"].get<double>();
-                  }
-
-                  if (!order.contains("order_id")) {
-                    continue;
-                  }
-
-                  Element element;
-                  element.insert("event", order.value("event", "add"));
-                  element.insert(CCAPI_EM_ORDER_ID, order.at("order_id").get<std::string>());
-                  element.insert(CCAPI_EM_ORDER_SIDE, sideValue);
-
-                  // --- HIGH-PERFORMANCE CONVERSION FOR PRICE ---
-                  auto [ptr_price, ec_price] =
-                      std::to_chars(conversion_buffer, conversion_buffer + sizeof(conversion_buffer), price, std::chars_format::fixed, PRICE_PRECISION);
-                  if (ec_price == std::errc()) {  // Check for success
-                    element.insert(CCAPI_EM_ORDER_LIMIT_PRICE, std::string(conversion_buffer, ptr_price));
-                  }
-
-                  // --- HIGH-PERFORMANCE CONVERSION FOR QUANTITY ---
-                  auto [ptr_qty, ec_qty] =
-                      std::to_chars(conversion_buffer, conversion_buffer + sizeof(conversion_buffer), qty, std::chars_format::fixed, SIZE_PRECISION);
-                  if (ec_qty == std::errc()) {  // Check for success
-                    element.insert(CCAPI_EM_ORDER_QUANTITY, std::string(conversion_buffer, ptr_qty));
-                  }
-
-                  elementList.push_back(element);
-                }
-              }
-            };
-            processOrders("bids", "bid");
-            processOrders("asks", "ask");
-
-            if (!elementList.empty()) {
-              message.setElementList(elementList);
-              messageList.push_back(message);
-            }
-          }
-        }
-
-      } else if (channel == "trade") {
-        event.setType(Event::Type::SUBSCRIPTION_DATA);
-        if (a.contains("data") && a.at("data").is_array()) {
+          // MOVED: Create a fresh message and element list for EACH item in the data array.
           Message message;
-          message.setType(Message::Type::MARKET_DATA_EVENTS_TRADE);
-          message.setTimeReceived(timeReceived);
-
-          const auto& dataArray = a.at("data");
-          TimePoint base_tp =
-              (!dataArray.empty() && dataArray[0].contains("timestamp")) ? UtilTime::parse(dataArray[0].at("timestamp").get<std::string>()) : timeReceived;
-          message.setTime(base_tp);
-
           std::vector<Element> elementList;
-          for (const auto& trade_item : dataArray) {
-            if (!trade_item.is_object() || !trade_item.contains("symbol")) continue;
 
-            double price = trade_item.value("price", 0.0);
-            double qty = trade_item.value("qty", 0.0);
-            if (price <= 0 || qty <= 0) {
-              CCAPI_LOGGER_WARN("KRAKEN SENT ZERO-VALUE TRADE: " + trade_item.dump());
-              continue;
+          message.setType(Message::Type::MARKET_DATA_EVENTS_MARKET_DEPTH);
+          message.setTimeReceived(timeReceived);
+          message.setRecapType(isSnapshot ? Message::RecapType::SOLICITED : Message::RecapType::NONE);
+
+          if (data_item.HasMember("timestamp") && data_item["timestamp"].IsString()) {
+            message.setTime(ccapi::UtilTime::parse(data_item["timestamp"].GetString()));
+          } else {
+            message.setTime(timeReceived);
+          }
+
+          const std::string& receivedSymbol = data_item["symbol"].GetString();
+          for (const auto& sub : wsConnectionPtr->subscriptionList) {
+            if (sub.getInstrument() == receivedSymbol && sub.getField() == "level3") {
+              message.setCorrelationIdList({sub.getCorrelationId()});
+              break;
             }
+          }
 
-            if (message.getCorrelationIdList().empty()) {
-              const std::string& receivedSymbol = trade_item.at("symbol").get<std::string>();
-              for (const auto& sub : wsConnectionPtr->subscriptionList) {
-                if (sub.getInstrument() == receivedSymbol && sub.getField() == CCAPI_TRADE) {
-                  message.setCorrelationIdList({sub.getCorrelationId()});
-                  break;
+          std::string checksum_str;
+          if (data_item.HasMember("checksum") && data_item["checksum"].IsString()) {
+            checksum_str = data_item["checksum"].GetString();
+          }
+
+          // The processOrders lambda now correctly populates the per-item 'elementList'
+          auto processOrders = [&](const char* sideKey, const char* sideValue) {
+            if (data_item.HasMember(sideKey) && data_item[sideKey].IsArray()) {
+              for (const auto& order : data_item[sideKey].GetArray()) {
+                if (!order.IsObject() || !order.HasMember("order_id")) continue;
+
+                Element element;
+                element.insert(CCAPI_EM_ORDER_ID, order["order_id"].GetString());
+                element.insert(CCAPI_EM_ORDER_SIDE, sideValue);
+                element.insert("event_time", order["timestamp"].GetString());
+                if (!checksum_str.empty()) {
+                  element.insert("checksum", checksum_str);
                 }
+
+                if (!isSnapshot) {
+                  if (order.HasMember("event") && order["event"].IsString()) {
+                    std::string event_type = order["event"].GetString();
+                    element.insert("event", event_type);
+                    if (event_type == "delete") {
+                      elementList.push_back(element);
+                      continue;
+                    }
+                  }
+                }
+
+                element.insert(CCAPI_EM_ORDER_LIMIT_PRICE, order["limit_price"].GetString());
+                element.insert(CCAPI_EM_ORDER_QUANTITY, order["order_qty"].GetString());
+                elementList.push_back(element);
               }
             }
+          };
 
-            Element element;
-            element.insert(CCAPI_LAST_PRICE, doubleToStringWithMaxPrecision(price));
-            element.insert(CCAPI_LAST_SIZE, doubleToStringWithMaxPrecision(qty));
-            element.insert(CCAPI_EM_ORDER_SIDE, trade_item.at("side").get<std::string>());
-            elementList.push_back(element);
-          }
+          processOrders("asks", "ask");
+          processOrders("bids", "bid");
+
+          // MOVED: Set elements and push the completed message inside the loop.
           if (!elementList.empty()) {
             message.setElementList(elementList);
             messageList.push_back(message);
           }
         }
       }
+    } else if (channel == "trade") {
+      event.setType(Event::Type::SUBSCRIPTION_DATA);
+      if (d.HasMember("data") && d["data"].IsArray()) {
+        Message message;
+        message.setType(Message::Type::MARKET_DATA_EVENTS_TRADE);
+        message.setTimeReceived(timeReceived);
 
-      if (!messageList.empty()) {
-        event.setMessageList(messageList);
-        this->eventHandler(event, nullptr);
+        std::vector<Element> elementList;
+        for (const auto& trade_item : d["data"].GetArray()) {
+          if (!trade_item.IsObject() || !trade_item.HasMember("symbol")) continue;
+
+          std::string priceStr = trade_item["price"].GetString();
+          std::string qtyStr = trade_item["qty"].GetString();
+
+          if (std::stod(priceStr) <= 0 || std::stod(qtyStr) <= 0) {
+            CCAPI_LOGGER_WARN("KRAKEN SENT ZERO-VALUE TRADE: " + textMessage);
+            continue;
+          }
+
+          if (message.getCorrelationIdList().empty()) {
+            const std::string& receivedSymbol = trade_item["symbol"].GetString();
+            for (const auto& sub : wsConnectionPtr->subscriptionList) {
+              if (sub.getInstrument() == receivedSymbol && sub.getField() == CCAPI_TRADE) {
+                message.setCorrelationIdList({sub.getCorrelationId()});
+                break;
+              }
+            }
+          }
+
+          Element element;
+
+          // SIMPLIFIED LOGIC: Just pass the raw, high-precision timestamp string directly.
+          if (trade_item.HasMember("timestamp") && trade_item["timestamp"].IsString()) {
+            element.insert("event_time", trade_item["timestamp"].GetString());
+          }
+
+          element.insert(CCAPI_LAST_PRICE, priceStr);
+          element.insert(CCAPI_LAST_SIZE, qtyStr);
+          element.insert(CCAPI_EM_ORDER_SIDE, trade_item["side"].GetString());
+          if (trade_item.HasMember("ord_type")) {
+            element.insert("ORD_TYPE", trade_item["ord_type"].GetString());
+          }
+          elementList.push_back(element);
+        }
+
+        if (!elementList.empty()) {
+          message.setElementList(elementList);
+          messageList.push_back(message);
+        }
       }
-
-      // CRITICAL FIX: Prevent this message from being processed again by the base class.
-      return;
     }
-    // For any other message type, pass it to the base class handler
-    CCAPI_LOGGER_WARN("Received and discarded unhandled message on Kraken MD WS: " + textMessage);
+
+    if (!messageList.empty()) {
+      event.setMessageList(messageList);
+      this->eventHandler(event, nullptr);
+    }
     return;
+
+    CCAPI_LOGGER_WARN("Received and discarded unhandled message on Kraken MD WS: " + textMessage);
   }
 
   void pingOnApplicationLevel(std::shared_ptr<WsConnection> wsConnectionPtr, ErrorCode& ec) override {

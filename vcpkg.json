@@ -1,0 +1,11 @@
+{
+  "name": "kraken-l3-collector",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "boost",
+    "openssl",
+    "nlohmann-json",
+    "rapidjson",
+    "zlib"
+  ]
+}

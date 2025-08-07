@@ -633,11 +633,78 @@ class Session {
     this->t.join();
   }
 
+  Service* getService(const std::string& serviceName) {
+    if (this->serviceByServiceNameExchangeMap.count(serviceName)) {
+      // This simplification is safe for your use case.
+      auto& exchangeMap = this->serviceByServiceNameExchangeMap.at(serviceName);
+      if (!exchangeMap.empty()) {
+        return exchangeMap.begin()->second.get();
+      }
+    }
+    return nullptr;
+  }
+
   virtual void subscribe(Subscription& subscription) {
     std::cout << "!!!!!!!!!!!!!!!!!!!! SESSION::SUBSCRIBE (SINGLE) CALLED !!!!!!!!!!!!!!!!!!!!" << std::endl;
     std::vector<Subscription> subscriptionList;
     subscriptionList.push_back(subscription);
     this->subscribe(subscriptionList);
+  }
+
+  virtual void unsubscribe(const std::vector<Subscription>& subscriptionList) {
+    CCAPI_LOGGER_FUNCTION_ENTER;
+    std::map<std::string, std::vector<Subscription>> subscriptionListByServiceNameMap;
+    for (const auto& subscription : subscriptionList) {
+      subscriptionListByServiceNameMap[subscription.getServiceName()].push_back(subscription);
+    }
+
+    for (const auto& x : subscriptionListByServiceNameMap) {
+      auto serviceName = x.first;
+      auto subscriptionsForService = x.second;
+
+      if (this->serviceByServiceNameExchangeMap.find(serviceName) == this->serviceByServiceNameExchangeMap.end()) {
+        this->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, "Service not found for unsubscribe: " + serviceName);
+        continue;
+      }
+
+      std::map<std::string, std::vector<Subscription>> subscriptionListByExchangeMap;
+      for (const auto& subscription : subscriptionsForService) {
+        subscriptionListByExchangeMap[subscription.getExchange()].push_back(subscription);
+      }
+
+      for (const auto& y : subscriptionListByExchangeMap) {
+        auto exchange = y.first;
+        auto subscriptionsForExchange = y.second;
+
+        if (this->serviceByServiceNameExchangeMap.at(serviceName).find(exchange) == this->serviceByServiceNameExchangeMap.at(serviceName).end()) {
+          this->onError(Event::Type::SUBSCRIPTION_STATUS, Message::Type::SUBSCRIPTION_FAILURE, "Exchange not found for unsubscribe: " + exchange);
+          continue;
+        }
+
+        auto servicePtr = this->serviceByServiceNameExchangeMap.at(serviceName).at(exchange);
+        // This call now correctly resolves to our overridden method in the Kraken service.
+        servicePtr->unsubscribe(subscriptionsForExchange);
+      }
+    }
+    CCAPI_LOGGER_FUNCTION_EXIT;
+  }
+
+  virtual void cleanupSubscription(const std::vector<Subscription>& subscriptionList) {
+    CCAPI_LOGGER_INFO("Cleaning up internal CCAPI subscription state.");
+    for (const auto& subscription : subscriptionList) {
+      auto serviceName = subscription.getServiceName();
+      auto exchange = subscription.getExchange();
+      if (this->serviceByServiceNameExchangeMap.count(serviceName) && this->serviceByServiceNameExchangeMap.at(serviceName).count(exchange)) {
+        auto servicePtr = this->serviceByServiceNameExchangeMap.at(serviceName).at(exchange);
+
+        // We need to call the base class unsubscribe method on the service.
+        auto* marketDataServicePtr = dynamic_cast<MarketDataService*>(servicePtr.get());
+        if (marketDataServicePtr) {
+          // This calls the base MarketDataService::unsubscribe, which does the internal cleanup.
+          marketDataServicePtr->unsubscribe(subscriptionList);
+        }
+      }
+    }
   }
 
   virtual void subscribe(std::vector<Subscription>& subscriptionList) {
@@ -940,6 +1007,8 @@ class Session {
     event.setMessageList({message});
     this->onEvent(event, eventQueuePtr);
   }
+
+  ServiceContext* getServiceContextPtr() { return serviceContextPtr; }
 #ifndef SWIG
   virtual void setImmediate(std::function<void()> successHandler) {
     boost::asio::post(*this->serviceContextPtr->ioContextPtr, [this, successHandler]() {
