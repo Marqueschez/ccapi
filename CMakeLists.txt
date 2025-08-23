@@ -6,6 +6,8 @@ project(KrakenL3Collector LANGUAGES CXX)
 
 cmake_policy(SET CMP0167 NEW)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if (MSVC)
   # For Debug builds, switch MSVC runtime to the Debug DLL (/MDd)
   string(REPLACE "/MD" "/MDd" CMAKE_C_FLAGS_DEBUG     "${CMAKE_C_FLAGS_DEBUG}")

@@ -10,7 +10,6 @@
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,
             "preLaunchTask": "CMake: build",
-            "envFile": "${workspaceFolder}/.env",
             "console": "integratedTerminal",
         }
     ]

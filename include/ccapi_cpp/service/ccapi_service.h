@@ -1111,6 +1111,12 @@ class Service : public std::enable_shared_from_this<Service> {
     auto now = UtilTime::now();
     WsConnection& wsConnection = *wsConnectionPtr;
     wsConnection.status = WsConnection::Status::OPEN;
+
+    {  // Add scope for lock guard
+      std::lock_guard<std::mutex> lock(this->connectionStateMutex);
+      this->wsConnectionByIdMap.insert(std::make_pair(wsConnectionPtr->id, wsConnectionPtr));
+    }
+
     CCAPI_LOGGER_INFO("connection " + toString(wsConnection) + " established");
     auto urlBase = UtilString::split(wsConnection.url, "?").at(0);
     this->connectNumRetryOnFailByConnectionUrlMap[urlBase] = 0;
@@ -1139,6 +1145,15 @@ class Service : public std::enable_shared_from_this<Service> {
   }
 
   void writeMessage(std::shared_ptr<WsConnection> wsConnectionPtr, const char* data, size_t dataSize) {
+    // Lock the mutex to protect access to connection maps
+    std::lock_guard<std::mutex> lock(this->connectionStateMutex);
+
+    // First, check if the connection is still considered active by the service
+    if (this->wsConnectionByIdMap.find(wsConnectionPtr->id) == this->wsConnectionByIdMap.end()) {
+      CCAPI_LOGGER_WARN("writeMessage ignored: connection " + wsConnectionPtr->id + " is already closed or being torn down.");
+      return;
+    }
+
     if (wsConnectionPtr->status != WsConnection::Status::OPEN) {
       CCAPI_LOGGER_WARN("should write no more messages");
       return;
@@ -1174,6 +1189,10 @@ class Service : public std::enable_shared_from_this<Service> {
 
   void onWriteWs(std::shared_ptr<WsConnection> wsConnectionPtr, const ErrorCode& ec, std::size_t n) {
     CCAPI_LOGGER_FUNCTION_ENTER;
+    if (this->wsConnectionByIdMap.find(wsConnectionPtr->id) == this->wsConnectionByIdMap.end()) {
+      CCAPI_LOGGER_WARN("onWriteWs callback for a closed/cleaned-up connection (" + wsConnectionPtr->id + "). Aborting callback to prevent crash.");
+      return;
+    }
     auto now = UtilTime::now();
     if (ec) {
       if (ec == beast::error::timeout) {
@@ -1204,7 +1223,9 @@ class Service : public std::enable_shared_from_this<Service> {
     writeMessageBufferBoundary.erase(writeMessageBufferBoundary.begin());
     CCAPI_LOGGER_TRACE("writeMessageBufferWrittenLength = " + toString(writeMessageBufferWrittenLength));
     CCAPI_LOGGER_TRACE("writeMessageBufferBoundary = " + toString(writeMessageBufferBoundary));
-    if (writeMessageBufferWrittenLength > 0) {
+
+    // FIX: Check that writeMessageBufferBoundary is NOT empty before calling .front()
+    if (writeMessageBufferWrittenLength > 0 && !writeMessageBufferBoundary.empty()) {
       std::memmove(writeMessageBuffer.data(), writeMessageBuffer.data() + n, writeMessageBufferWrittenLength);
       CCAPI_LOGGER_TRACE("about to start write");
       this->startWriteWs(wsConnectionPtr, writeMessageBuffer.data(), writeMessageBufferBoundary.front());
@@ -1269,6 +1290,7 @@ class Service : public std::enable_shared_from_this<Service> {
   }
 
   virtual void clearStates(std::shared_ptr<WsConnection> wsConnectionPtr) {
+    std::lock_guard<std::mutex> lock(this->connectionStateMutex);  // Lock at the top
     WsConnection& wsConnection = *wsConnectionPtr;
     CCAPI_LOGGER_INFO("clear states for wsConnection " + toString(wsConnection));
     this->shouldProcessRemainingMessageOnClosingByConnectionIdMap.erase(wsConnection.id);
@@ -1328,8 +1350,16 @@ class Service : public std::enable_shared_from_this<Service> {
     this->eventHandler(event, nullptr);
     CCAPI_LOGGER_INFO("connection " + toString(wsConnection) + " is closed");
     this->clearStates(wsConnectionPtr);
+    // The order here is important. We create the new pointer before clearing state.
     auto thisWsConnectionPtr = this->createWsConnectionPtr(wsConnectionPtr);
-    this->wsConnectionByIdMap.erase(wsConnectionPtr->id);
+
+    // Now lock before modifying the maps
+    {
+      std::lock_guard<std::mutex> lock(this->connectionStateMutex);
+      this->clearStates(wsConnectionPtr);
+      this->wsConnectionByIdMap.erase(wsConnectionPtr->id);
+    }
+
     if (this->shouldContinue.load()) {
       this->prepareConnect(thisWsConnectionPtr);
     }
@@ -1576,6 +1606,7 @@ class Service : public std::enable_shared_from_this<Service> {
   InflateStream inflater;
 
 #endif
+  mutable std::mutex connectionStateMutex;
 };
 } /* namespace ccapi */
 #endif  // INCLUDE_CCAPI_CPP_SERVICE_CCAPI_SERVICE_H_

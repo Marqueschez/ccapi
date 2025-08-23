@@ -129,43 +129,36 @@ class MarketDataServiceKraken : public MarketDataService {
     }
   }
 
+  // Replace the entire 'subscribe' function with this one.
+
   void subscribe(std::vector<Subscription>& subscriptionList) override {
+    // Determine the correct target URL for this batch of subscriptions.
+    // This logic correctly handles batches that are either all L3 or all public.
     bool isL3Service =
         std::any_of(subscriptionList.begin(), subscriptionList.end(), [](const Subscription& sub) { return sub.getServiceName() == "market_data_l3"; });
+    std::string targetUrl = isL3Service ? "wss://ws-auth.kraken.com/v2" : "wss://ws.kraken.com/v2";
+    auto targetHostPort = this->extractHostFromUrl(targetUrl);
+    std::string targetHost = targetHostPort.first;
 
-    std::string newUrl = isL3Service ? "wss://ws-auth.kraken.com/v2" : "wss://ws.kraken.com/v2";
-
-    if (this->baseUrlWs != newUrl && !this->baseUrlWs.empty()) {
-      CCAPI_LOGGER_INFO("Endpoint changing from " + this->baseUrlWs + " to " + newUrl + ". Closing stale connections.");
-      std::vector<std::shared_ptr<WsConnection>> connectionsToClose;
-      for (const auto& it : this->wsConnectionByIdMap) {
-        if (it.second->host == this->hostWs) {
-          connectionsToClose.push_back(it.second);
-        }
-      }
-      for (auto& conn : connectionsToClose) {
-        ErrorCode ec;
-        this->close(conn, beast::websocket::close_code::normal, beast::websocket::close_reason("endpoint switch"), ec);
-      }
-    }
-    this->baseUrlWs = newUrl;
-    this->setHostWsFromUrlWs(this->baseUrlWs);
-
+    // Find if a connection to the correct target host already exists.
     std::shared_ptr<WsConnection> wsConnectionPtr = nullptr;
     for (const auto& it : this->wsConnectionByIdMap) {
-      if (it.second->host == this->hostWs) {
+      if (it.second->host == targetHost) {
         wsConnectionPtr = it.second;
         break;
       }
     }
 
+    // If we found a matching, open connection, use it to subscribe.
     if (wsConnectionPtr && wsConnectionPtr->status == WsConnection::Status::OPEN) {
-      CCAPI_LOGGER_INFO("Connection for " + this->hostWs + " is already open. Manually sending subscribe and updating state.");
+      CCAPI_LOGGER_INFO("Connection for " + targetHost + " is already open. Manually sending subscribe and updating state.");
 
+      // Add the new subscriptions to the connection's internal list for tracking.
       for (const auto& sub : subscriptionList) {
         wsConnectionPtr->subscriptionList.push_back(sub);
       }
 
+      // This part for building the JSON message is correct and can be reused.
       std::map<std::string, std::vector<std::string>> subsByChannel;
       for (const auto& sub : subscriptionList) {
         std::string channelName;
@@ -231,7 +224,11 @@ class MarketDataServiceKraken : public MarketDataService {
         }
       }
     } else {
-      CCAPI_LOGGER_INFO("No open connection found for " + this->hostWs + ". Deferring to base class subscribe logic.");
+      // If no connection exists for the target, we must set the service's own URL
+      // to the correct target before calling the base class, so it creates the connection properly.
+      CCAPI_LOGGER_INFO("No open connection found for " + targetHost + ". Deferring to base class to create a new connection.");
+      this->baseUrlWs = targetUrl;
+      this->setHostWsFromUrlWs(this->baseUrlWs);
       MarketDataService::subscribe(subscriptionList);
     }
   }
@@ -396,7 +393,7 @@ class MarketDataServiceKraken : public MarketDataService {
 
           Element element;
 
-          // SIMPLIFIED LOGIC: Just pass the raw, high-precision timestamp string directly.
+          // SIMPLIFIED LOGIC: Just pass the high-precision timestamp string directly.
           if (trade_item.HasMember("timestamp") && trade_item["timestamp"].IsString()) {
             element.insert("event_time", trade_item["timestamp"].GetString());
           }
