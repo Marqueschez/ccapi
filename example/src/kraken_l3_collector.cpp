@@ -1433,428 +1433,470 @@ class MyEventHandler : public ccapi::EventHandler {
       static std::atomic<long long> req_id_counter{1};
       long long req_id = req_id_counter.fetch_add(1);
       std::string req_id_str = std::to_string(req_id);
+      // --- NEW RETRY LOGIC ---
+      const int max_retries = 3;
+      bool unsubscribe_successful = false;
 
-      std::promise<bool> ackPromise;
-      std::future<bool> ackFuture = ackPromise.get_future();
+      for (int attempt = 1; attempt <= max_retries; ++attempt) {
+        // Each attempt needs a new req_id and a new promise
+        static std::atomic<long long> req_id_counter{1};
+        long long req_id = req_id_counter.fetch_add(1);
+        std::string req_id_str = std::to_string(req_id);
 
-      {
-        std::lock_guard<std::mutex> ackLock(ackMutex_);
-        ackPromises_.emplace(req_id_str, std::move(ackPromise));
-      }
+        std::promise<bool> ackPromise;
+        std::future<bool> ackFuture = ackPromise.get_future();
+        std::promise<bool> ackPromise;
+        std::future<bool> ackFuture = ackPromise.get_future();
 
-      ccapi::Subscription subToUnsubscribe = singleSubscription;
-      subToUnsubscribe.setOption("req_id", req_id_str);
-
-      std::cout << "[RESYNC] Sending unsubscribe for " << instrumentKey << " with req_id=" << req_id_str << " (attempt " << attempt << "/" << max_retries << ")"
-                << std::endl;
-      session->unsubscribe({subToUnsubscribe});
-
-      std::cout << "[RESYNC] Waiting for unsubscribe ACK for " << instrumentKey << " (1s)..." << std::endl;
-      if (ackFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
-        bool ack_result = ackFuture.get();
-        if (ack_result) {
-          std::cout << "[RESYNC] Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") received and successful." << std::endl;
-          unsubscribe_successful = true;
-          // Clean up the successful promise from the map
-          {
-            std::lock_guard<std::mutex> ackLock(ackMutex_);
-            ackPromises_.erase(req_id_str);
-          }
-          break;  // Exit the retry loop on success
-        } else {
-          std::cerr << "[RESYNC] WARNING: Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") reported failure. Retrying..." << std::endl;
+        {
+          std::lock_guard<std::mutex> ackLock(ackMutex_);
+          ackPromises_.emplace(req_id_str, std::move(ackPromise));
         }
-      } else {  // Timeout
-        std::cerr << "[RESYNC] WARNING: Timed out waiting for unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ")." << std::endl;
+        {
+          std::lock_guard<std::mutex> ackLock(ackMutex_);
+          ackPromises_.emplace(req_id_str, std::move(ackPromise));
+        }
+
+        ccapi::Subscription subToUnsubscribe = singleSubscription;
+        subToUnsubscribe.setOption("req_id", req_id_str);
+        ccapi::Subscription subToUnsubscribe = singleSubscription;
+        subToUnsubscribe.setOption("req_id", req_id_str);
+
+        std::cout << "[RESYNC] Sending unsubscribe for " << instrumentKey << " with req_id=" << req_id_str << " (attempt " << attempt << "/" << max_retries
+                  << ")" << std::endl;
+        session->unsubscribe({subToUnsubscribe});
+        std::cout << "[RESYNC] Sending unsubscribe for " << instrumentKey << " with req_id=" << req_id_str << " (attempt " << attempt << "/" << max_retries
+                  << ")" << std::endl;
+        session->unsubscribe({subToUnsubscribe});
+
+        std::cout << "[RESYNC] Waiting for unsubscribe ACK for " << instrumentKey << " (1s)..." << std::endl;
+        if (ackFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
+          bool ack_result = ackFuture.get();
+          if (ack_result) {
+            std::cout << "[RESYNC] Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") received and successful." << std::endl;
+            unsubscribe_successful = true;
+            // Clean up the successful promise from the map
+            {
+              std::lock_guard<std::mutex> ackLock(ackMutex_);
+              ackPromises_.erase(req_id_str);
+            }
+            break;  // Exit the retry loop on success
+          } else {
+            std::cerr << "[RESYNC] WARNING: Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") reported failure. Retrying..."
+                      << std::endl;
+          }
+        } else {  // Timeout
+          std::cerr << "[RESYNC] WARNING: Timed out waiting for unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ")." << std::endl;
+        }
+        std::cout << "[RESYNC] Waiting for unsubscribe ACK for " << instrumentKey << " (1s)..." << std::endl;
+        if (ackFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
+          bool ack_result = ackFuture.get();
+          if (ack_result) {
+            std::cout << "[RESYNC] Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") received and successful." << std::endl;
+            unsubscribe_successful = true;
+            // Clean up the successful promise from the map
+            {
+              std::lock_guard<std::mutex> ackLock(ackMutex_);
+              ackPromises_.erase(req_id_str);
+            }
+            break;  // Exit the retry loop on success
+          } else {
+            std::cerr << "[RESYNC] WARNING: Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") reported failure. Retrying..."
+                      << std::endl;
+          }
+        } else {  // Timeout
+          std::cerr << "[RESYNC] WARNING: Timed out waiting for unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ")." << std::endl;
+        }
+
+        // Clean up the failed/timed-out promise from the map before the next attempt
+        {
+          std::lock_guard<std::mutex> ackLock(ackMutex_);
+          ackPromises_.erase(req_id_str);
+        }
+      }  // End of retry loop
+
+      if (!unsubscribe_successful) {
+        std::cerr << "[RESYNC] ERROR: All " << max_retries << " unsubscribe attempts failed for " << instrumentKey
+                  << ". Aborting resync. The connection will be reset by the library." << std::endl;
+        state.resyncInProgress = false;  // Allow another resync to be triggered if needed
+        return;                          // Give up and let the default connection teardown handle it
+      }
+      std::cout << "[RESYNC] Unsubscribe successful. Waiting 250ms before re-subscribing..." << std::endl;
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+      // This part only executes if the unsubscribe was successful
+      state.clearL3Book();
+      std::cout << "[RESYNC] Book cleared for " << instrumentKey << ". Re-subscribing." << std::endl;
+
+      std::vector<ccapi::Subscription> subscriptionsToResubscribe = {singleSubscription};
+      session->subscribe(subscriptionsToResubscribe);
+
+      // The resyncInProgress flag is reset in processKrakenL3Snapshot
+      // The resyncInProgress flag is reset in processKrakenL3Snapshot
+    }
+  };
+
+  void MyEventHandler::qdb_writer_main() {
+    std::cout << "INFO: QuestDB writer thread started." << std::endl;
+    questdb::ingress::line_sender_buffer send_buffer;
+    auto last_flush = std::chrono::steady_clock::now();
+    std::string current_table_in_batch;
+    QdbEvent event_data;
+
+    while (true) {
+      // 1. Block and wait for the first event.
+      if (!qdb_queue_.wait_and_pop(event_data)) {
+        break;  // Shutdown signal received
       }
 
-      // Clean up the failed/timed-out promise from the map before the next attempt
-      {
-        std::lock_guard<std::mutex> ackLock(ackMutex_);
-        ackPromises_.erase(req_id_str);
-      }
-    }  // End of retry loop
-
-    if (!unsubscribe_successful) {
-      std::cerr << "[RESYNC] ERROR: All " << max_retries << " unsubscribe attempts failed for " << instrumentKey
-                << ". Aborting resync. The connection will be reset by the library." << std::endl;
-      state.resyncInProgress = false;  // Allow another resync to be triggered if needed
-      return;                          // Give up and let the default connection teardown handle it
-    }
-    std::cout << "[RESYNC] Unsubscribe successful. Waiting 250ms before re-subscribing..." << std::endl;
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
-
-    // This part only executes if the unsubscribe was successful
-    state.clearL3Book();
-    std::cout << "[RESYNC] Book cleared for " << instrumentKey << ". Re-subscribing." << std::endl;
-
-    std::vector<ccapi::Subscription> subscriptionsToResubscribe = {singleSubscription};
-    session->subscribe(subscriptionsToResubscribe);
-
-    // The resyncInProgress flag is reset in processKrakenL3Snapshot
-  }
-};
-
-void MyEventHandler::qdb_writer_main() {
-  std::cout << "INFO: QuestDB writer thread started." << std::endl;
-  questdb::ingress::line_sender_buffer send_buffer;
-  auto last_flush = std::chrono::steady_clock::now();
-  std::string current_table_in_batch;
-  QdbEvent event_data;
-
-  while (true) {
-    // 1. Block and wait for the first event.
-    if (!qdb_queue_.wait_and_pop(event_data)) {
-      break;  // Shutdown signal received
-    }
-
-    // 2. Process the first event.
-    process_qdb_event(event_data, send_buffer, current_table_in_batch);
-
-    // 3. Greedily process other events already in the queue.
-    while (qdb_queue_.try_pop(event_data)) {
+      // 2. Process the first event.
       process_qdb_event(event_data, send_buffer, current_table_in_batch);
+
+      // 3. Greedily process other events already in the queue.
+      while (qdb_queue_.try_pop(event_data)) {
+        process_qdb_event(event_data, send_buffer, current_table_in_batch);
+      }
+
+      // 4. Check if we need to flush the buffer (less aggressive than before).
+      auto now = std::chrono::steady_clock::now();
+      if (send_buffer.size() > 512 * 1024 || (send_buffer.size() > 0 && std::chrono::duration_cast<std::chrono::seconds>(now - last_flush).count() >= 5)) {
+        try {
+          sender_->flush(send_buffer);
+          current_table_in_batch.clear();
+        } catch (const std::exception& e) {
+          std::cerr << "ERROR: QuestDB flush failed: " << e.what() << std::endl;
+          send_buffer.clear();
+        }
+        last_flush = now;
+      }
     }
 
-    // 4. Check if we need to flush the buffer (less aggressive than before).
-    auto now = std::chrono::steady_clock::now();
-    if (send_buffer.size() > 512 * 1024 || (send_buffer.size() > 0 && std::chrono::duration_cast<std::chrono::seconds>(now - last_flush).count() >= 5)) {
+    // Final flush on shutdown
+    if (send_buffer.size() > 0) {
       try {
         sender_->flush(send_buffer);
-        current_table_in_batch.clear();
       } catch (const std::exception& e) {
-        std::cerr << "ERROR: QuestDB flush failed: " << e.what() << std::endl;
-        send_buffer.clear();
+        std::cerr << "ERROR: Final QuestDB flush failed: " << e.what() << std::endl;
       }
-      last_flush = now;
     }
-  }
 
-  // Final flush on shutdown
-  if (send_buffer.size() > 0) {
+    // Gracefully close the sender
     try {
-      sender_->flush(send_buffer);
+      sender_->close();
     } catch (const std::exception& e) {
-      std::cerr << "ERROR: Final QuestDB flush failed: " << e.what() << std::endl;
+      std::cerr << "ERROR: QuestDB sender close failed: " << e.what() << std::endl;
     }
+    std::cout << "INFO: QuestDB writer thread finished." << std::endl;
   }
 
-  // Gracefully close the sender
-  try {
-    sender_->close();
-  } catch (const std::exception& e) {
-    std::cerr << "ERROR: QuestDB sender close failed: " << e.what() << std::endl;
+  void MyEventHandler::process_qdb_event(QdbEvent& event_data, questdb::ingress::line_sender_buffer& send_buffer, std::string& current_table_in_batch) {
+    std::visit(
+        [&](auto&& arg) {
+          using T = std::decay_t<decltype(arg)>;
+
+          // FIX 1: Create a "safe" symbol by replacing '/' with '_' for all event types.
+          std::string safeSymbol = arg.assetPair;
+          std::replace(safeSymbol.begin(), safeSymbol.end(), '/', '_');
+
+          // Determine the target table for the current event
+          const char* target_table_name = nullptr;
+          if constexpr (std::is_same_v<T, L3DataForQueue>) {
+            target_table_name = "kraken_l3_book_levels_agg";
+          } else if constexpr (std::is_same_v<T, TradeDataForQueue>) {
+            target_table_name = "kraken_trades";
+          } else if constexpr (std::is_same_v<T, CalculatedFlowFeatures>) {
+            target_table_name = "kraken_l3_flow_features";
+          }
+          if (!target_table_name) return;
+
+          // If the table is changing, flush the buffer before proceeding.
+          if (!current_table_in_batch.empty() && current_table_in_batch != target_table_name) {
+            try {
+              sender_->flush(send_buffer);
+            } catch (const std::exception& e) {
+              std::cerr << "ERROR: QuestDB flush-on-table-switch failed: " << e.what() << std::endl;
+              send_buffer.clear();  // Avoid sending old data with the new
+            }
+          }
+          current_table_in_batch = target_table_name;
+
+          if constexpr (std::is_same_v<T, L3DataForQueue>) {
+            // Use the safeSymbol
+            send_buffer.table("kraken_l3_book_levels_agg"_tn).symbol("symbol"_cn, questdb::ingress::utf8_view{safeSymbol});
+
+            // Write Top-N level data (This part was correct)
+            for (int i = 0; i < NUM_AGGREGATED_LEVELS_TO_SEND; ++i) {
+              std::string level_str = std::to_string(i + 1);
+              send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_price"}, longToPrice(arg.topBids[i].price_l));
+              send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_size"}, longToSize(arg.topBids[i].size_l));
+              send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_orders"}, static_cast<long long>(arg.topBids[i].orders_count));
+
+              send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_price"}, longToPrice(arg.topAsks[i].price_l));
+              send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_size"}, longToSize(arg.topAsks[i].size_l));
+              send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_orders"}, static_cast<long long>(arg.topAsks[i].orders_count));
+            }
+
+            // FIX 2: Add all the missing feature columns back for the top 5 levels.
+            for (int i = 0; i < 5; ++i) {
+              std::string level_str = std::to_string(i + 1);
+              const auto& bid_f = arg.topBidsFeatures[i];
+              const auto& ask_f = arg.topAsksFeatures[i];
+
+              send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_orders80pct"}, bid_f.orders80pct);
+              send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_hhi"}, bid_f.hhi);
+              send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_topordersize"}, bid_f.topOrderSize);
+              send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_toporderage_ms"}, bid_f.topOrderAge_ms);
+
+              send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_orders80pct"}, ask_f.orders80pct);
+              send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_hhi"}, ask_f.hhi);
+              send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_topordersize"}, ask_f.topOrderSize);
+              send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_toporderage_ms"}, ask_f.topOrderAge_ms);
+            }
+
+            send_buffer.at(questdb::ingress::timestamp_nanos{arg.tp.time_since_epoch().count()});
+
+          } else if constexpr (std::is_same_v<T, TradeDataForQueue>) {
+            // Use the safeSymbol
+            send_buffer.table("kraken_trades"_tn)
+                .symbol("symbol"_cn, questdb::ingress::utf8_view{safeSymbol})
+                .column("price"_cn, arg.price_d)
+                .column("size"_cn, arg.size_d)
+                .column("side"_cn, questdb::ingress::utf8_view{arg.side})
+                .column("ord_type"_cn, questdb::ingress::utf8_view{arg.ord_type})
+                .at(questdb::ingress::timestamp_nanos{arg.tp.time_since_epoch().count()});
+
+          } else if constexpr (std::is_same_v<T, CalculatedFlowFeatures>) {
+            // Use the safeSymbol
+            send_buffer.table("kraken_l3_flow_features"_tn)
+                .symbol("symbol"_cn, questdb::ingress::utf8_view{safeSymbol})
+                .column("ofi_level1"_cn, arg.ofi_level1)
+                .column("ofi_level2"_cn, arg.ofi_level2)
+                .column("ofi_level3"_cn, arg.ofi_level3)
+                .column("ofi_level4"_cn, arg.ofi_level4)
+                .column("ofi_level5"_cn, arg.ofi_level5)
+                .at(questdb::ingress::timestamp_nanos{arg.tp.time_since_epoch().count()});
+          }
+        },
+        event_data);
   }
-  std::cout << "INFO: QuestDB writer thread finished." << std::endl;
-}
 
-void MyEventHandler::process_qdb_event(QdbEvent& event_data, questdb::ingress::line_sender_buffer& send_buffer, std::string& current_table_in_batch) {
-  std::visit(
-      [&](auto&& arg) {
-        using T = std::decay_t<decltype(arg)>;
+  void MyEventHandler::instrument_worker_main(std::string instrumentKey) {
+    std::cout << "[WORKER] Thread started for " << instrumentKey << std::endl;
 
-        // FIX 1: Create a "safe" symbol by replacing '/' with '_' for all event types.
-        std::string safeSymbol = arg.assetPair;
-        std::replace(safeSymbol.begin(), safeSymbol.end(), '/', '_');
+    // Now these lines will work because the function has a 'this' pointer
+    auto& queue = this->instrumentQueues_.at(instrumentKey);
+    auto& state = this->instrumentStates_.at(instrumentKey);
 
-        // Determine the target table for the current event
-        const char* target_table_name = nullptr;
-        if constexpr (std::is_same_v<T, L3DataForQueue>) {
-          target_table_name = "kraken_l3_book_levels_agg";
-        } else if constexpr (std::is_same_v<T, TradeDataForQueue>) {
-          target_table_name = "kraken_trades";
-        } else if constexpr (std::is_same_v<T, CalculatedFlowFeatures>) {
-          target_table_name = "kraken_l3_flow_features";
+    ccapi::Message message;
+    while (queue->wait_and_pop(message)) {
+      // Logic from the old processInstrumentMessage is now directly here.
+      // The session pointer is accessed via this->sessionPtr_.
+
+      if (message.getType() == ccapi::Message::Type::MARKET_DATA_EVENTS_MARKET_DEPTH) {
+        bool isSnapshot = (message.getRecapType() == ccapi::Message::RecapType::SOLICITED);
+
+        if (state.resyncInProgress && !isSnapshot) {
+          continue;  // Use continue to process the next message in the queue
         }
-        if (!target_table_name) return;
 
-        // If the table is changing, flush the buffer before proceeding.
-        if (!current_table_in_batch.empty() && current_table_in_batch != target_table_name) {
-          try {
-            sender_->flush(send_buffer);
-          } catch (const std::exception& e) {
-            std::cerr << "ERROR: QuestDB flush-on-table-switch failed: " << e.what() << std::endl;
-            send_buffer.clear();  // Avoid sending old data with the new
-          }
-        }
-        current_table_in_batch = target_table_name;
-
-        if constexpr (std::is_same_v<T, L3DataForQueue>) {
-          // Use the safeSymbol
-          send_buffer.table("kraken_l3_book_levels_agg"_tn).symbol("symbol"_cn, questdb::ingress::utf8_view{safeSymbol});
-
-          // Write Top-N level data (This part was correct)
-          for (int i = 0; i < NUM_AGGREGATED_LEVELS_TO_SEND; ++i) {
-            std::string level_str = std::to_string(i + 1);
-            send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_price"}, longToPrice(arg.topBids[i].price_l));
-            send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_size"}, longToSize(arg.topBids[i].size_l));
-            send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_orders"}, static_cast<long long>(arg.topBids[i].orders_count));
-
-            send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_price"}, longToPrice(arg.topAsks[i].price_l));
-            send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_size"}, longToSize(arg.topAsks[i].size_l));
-            send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_orders"}, static_cast<long long>(arg.topAsks[i].orders_count));
-          }
-
-          // FIX 2: Add all the missing feature columns back for the top 5 levels.
-          for (int i = 0; i < 5; ++i) {
-            std::string level_str = std::to_string(i + 1);
-            const auto& bid_f = arg.topBidsFeatures[i];
-            const auto& ask_f = arg.topAsksFeatures[i];
-
-            send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_orders80pct"}, bid_f.orders80pct);
-            send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_hhi"}, bid_f.hhi);
-            send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_topordersize"}, bid_f.topOrderSize);
-            send_buffer.column(questdb::ingress::column_name_view{"bid" + level_str + "_toporderage_ms"}, bid_f.topOrderAge_ms);
-
-            send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_orders80pct"}, ask_f.orders80pct);
-            send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_hhi"}, ask_f.hhi);
-            send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_topordersize"}, ask_f.topOrderSize);
-            send_buffer.column(questdb::ingress::column_name_view{"ask" + level_str + "_toporderage_ms"}, ask_f.topOrderAge_ms);
-          }
-
-          send_buffer.at(questdb::ingress::timestamp_nanos{arg.tp.time_since_epoch().count()});
-
-        } else if constexpr (std::is_same_v<T, TradeDataForQueue>) {
-          // Use the safeSymbol
-          send_buffer.table("kraken_trades"_tn)
-              .symbol("symbol"_cn, questdb::ingress::utf8_view{safeSymbol})
-              .column("price"_cn, arg.price_d)
-              .column("size"_cn, arg.size_d)
-              .column("side"_cn, questdb::ingress::utf8_view{arg.side})
-              .column("ord_type"_cn, questdb::ingress::utf8_view{arg.ord_type})
-              .at(questdb::ingress::timestamp_nanos{arg.tp.time_since_epoch().count()});
-
-        } else if constexpr (std::is_same_v<T, CalculatedFlowFeatures>) {
-          // Use the safeSymbol
-          send_buffer.table("kraken_l3_flow_features"_tn)
-              .symbol("symbol"_cn, questdb::ingress::utf8_view{safeSymbol})
-              .column("ofi_level1"_cn, arg.ofi_level1)
-              .column("ofi_level2"_cn, arg.ofi_level2)
-              .column("ofi_level3"_cn, arg.ofi_level3)
-              .column("ofi_level4"_cn, arg.ofi_level4)
-              .column("ofi_level5"_cn, arg.ofi_level5)
-              .at(questdb::ingress::timestamp_nanos{arg.tp.time_since_epoch().count()});
-        }
-      },
-      event_data);
-}
-
-void MyEventHandler::instrument_worker_main(std::string instrumentKey) {
-  std::cout << "[WORKER] Thread started for " << instrumentKey << std::endl;
-
-  // Now these lines will work because the function has a 'this' pointer
-  auto& queue = this->instrumentQueues_.at(instrumentKey);
-  auto& state = this->instrumentStates_.at(instrumentKey);
-
-  ccapi::Message message;
-  while (queue->wait_and_pop(message)) {
-    // Logic from the old processInstrumentMessage is now directly here.
-    // The session pointer is accessed via this->sessionPtr_.
-
-    if (message.getType() == ccapi::Message::Type::MARKET_DATA_EVENTS_MARKET_DEPTH) {
-      bool isSnapshot = (message.getRecapType() == ccapi::Message::RecapType::SOLICITED);
-
-      if (state.resyncInProgress && !isSnapshot) {
-        continue;  // Use continue to process the next message in the queue
-      }
-
-      BookDataForProcessing dataForDownstream;
-      // The worker thread has exclusive access to its 'state' object, so no mutex is needed here.
-      {
-        if (isSnapshot) {
-          // Now this will work because the function is a member function
-          this->processKrakenL3Snapshot(state, message, instrumentKey, this->sessionPtr_);
-          continue;
-        } else {
-          if (state.bookSnapshotReceived) {
-            // And this will work
-            if (!this->processKrakenL3Update(state, message, instrumentKey, this->sessionPtr_, false)) {
+        BookDataForProcessing dataForDownstream;
+        // The worker thread has exclusive access to its 'state' object, so no mutex is needed here.
+        {
+          if (isSnapshot) {
+            // Now this will work because the function is a member function
+            this->processKrakenL3Snapshot(state, message, instrumentKey, this->sessionPtr_);
+            continue;
+          } else {
+            if (state.bookSnapshotReceived) {
+              // And this will work
+              if (!this->processKrakenL3Update(state, message, instrumentKey, this->sessionPtr_, false)) {
+                continue;
+              }
+            } else {
+              state.pendingUpdates.push_back(message);
               continue;
             }
+          }
+
+          ccapi::TimePoint corrected_tp;
+          // And this will work
+          auto& last_book_tp = this->last_book_timestamp_by_instrument_[state.assetPair];
+          if (last_book_tp.time_since_epoch().count() > 0 && message.getTime() <= last_book_tp) {
+            corrected_tp = last_book_tp + std::chrono::nanoseconds(1);
           } else {
-            state.pendingUpdates.push_back(message);
+            corrected_tp = message.getTime();
+          }
+          last_book_tp = corrected_tp;
+
+          state.updateTopNForQuestDB();
+
+          if (!isSnapshot && state.topBidsForQuest == state.lastSentTopBids && state.topAsksForQuest == state.lastSentTopAsks) {
             continue;
           }
+
+          dataForDownstream.tp = corrected_tp;
+          dataForDownstream.exchange = state.exchange;
+          dataForDownstream.assetPair = state.assetPair;
+          dataForDownstream.is_snapshot = isSnapshot;
+          dataForDownstream.topBids = state.topBidsForQuest;
+          dataForDownstream.topAsks = state.topAsksForQuest;
+          dataForDownstream.prev_bid_volumes_l = state.prevBidVolumes_l;
+          dataForDownstream.prev_ask_volumes_l = state.prevAskVolumes_l;
+
+          std::array<AggregatedLevelData, 5> currentTop5Bids{};
+          std::array<AggregatedLevelData, 5> currentTop5Asks{};
+          int i = 0;
+          for (const auto& pair_ : state.bidBookL3) {
+            if (i >= 5) break;
+            currentTop5Bids[i].price_l = pair_.second.price_l;
+            currentTop5Bids[i].size_l = pair_.second.totalSizeAtLevel_l;
+            currentTop5Bids[i].orders_count = pair_.second.getNumOrdersAtLevel();
+            i++;
+          }
+          i = 0;
+          for (const auto& pair_ : state.askBookL3) {
+            if (i >= 5) break;
+            currentTop5Asks[i].price_l = pair_.second.price_l;
+            currentTop5Asks[i].size_l = pair_.second.totalSizeAtLevel_l;
+            currentTop5Asks[i].orders_count = pair_.second.getNumOrdersAtLevel();
+            i++;
+          }
+
+          if (currentTop5Bids != state.lastSentTop5Bids || currentTop5Asks != state.lastSentTop5Asks) {
+            dataForDownstream.top_5_levels_changed = true;
+          }
+
+          int j = 0;
+          for (const auto& pair_ : state.bidBookL3) {
+            if (j++ >= 5) break;
+            SimplePriceLevel spl;
+            spl.price_l = pair_.second.price_l;
+            spl.totalSizeAtLevel_l = pair_.second.totalSizeAtLevel_l;
+            spl.orders.reserve(pair_.second.orders.size());
+            for (const auto& order : pair_.second.orders) {
+              spl.orders.push_back({order.size_l, order.arrivalTime});
+            }
+            dataForDownstream.top_5_bids_levels.push_back(std::move(spl));
+          }
+          j = 0;
+          for (const auto& pair_ : state.askBookL3) {
+            if (j++ >= 5) break;
+            SimplePriceLevel spl;
+            spl.price_l = pair_.second.price_l;
+            spl.totalSizeAtLevel_l = pair_.second.totalSizeAtLevel_l;
+            spl.orders.reserve(pair_.second.orders.size());
+            for (const auto& order : pair_.second.orders) {
+              spl.orders.push_back({order.size_l, order.arrivalTime});
+            }
+            dataForDownstream.top_5_asks_levels.push_back(std::move(spl));
+          }
+
+          // Apply the fix here.
+          state.lastSentTopBids = state.topBidsForQuest;
+          state.lastSentTopAsks = state.topAsksForQuest;
+          state.lastSentTop5Bids = currentTop5Bids;
+          state.lastSentTop5Asks = currentTop5Asks;
+          state.prevBidVolumes_l.clear();
+          for (const auto& pair : state.bidBookL3) state.prevBidVolumes_l[pair.first] = pair.second.totalSizeAtLevel_l;
+          state.prevAskVolumes_l.clear();
+          for (const auto& pair : state.askBookL3) state.prevAskVolumes_l[pair.first] = pair.second.totalSizeAtLevel_l;
         }
 
-        ccapi::TimePoint corrected_tp;
+        if (dataForDownstream.topBids[0].price_l <= 0 || dataForDownstream.topAsks[0].price_l <= 0) {
+          continue;
+        }
+
+        L3DataForQueue book_data_for_q;
+        book_data_for_q.tp = dataForDownstream.tp;
+        book_data_for_q.exchange = dataForDownstream.exchange;
+        book_data_for_q.assetPair = dataForDownstream.assetPair;
+        book_data_for_q.topBids = dataForDownstream.topBids;
+        book_data_for_q.topAsks = dataForDownstream.topAsks;
+
+        for (size_t i = 0; i < dataForDownstream.top_5_bids_levels.size(); ++i) {
+          book_data_for_q.topBidsFeatures[i] =
+              InstrumentState::calculate_level_features_from_simple(dataForDownstream.top_5_bids_levels[i], dataForDownstream.tp);
+        }
+        for (size_t i = 0; i < dataForDownstream.top_5_asks_levels.size(); ++i) {
+          book_data_for_q.topAsksFeatures[i] =
+              InstrumentState::calculate_level_features_from_simple(dataForDownstream.top_5_asks_levels[i], dataForDownstream.tp);
+        }
         // And this will work
-        auto& last_book_tp = this->last_book_timestamp_by_instrument_[state.assetPair];
-        if (last_book_tp.time_since_epoch().count() > 0 && message.getTime() <= last_book_tp) {
-          corrected_tp = last_book_tp + std::chrono::nanoseconds(1);
-        } else {
-          corrected_tp = message.getTime();
-        }
-        last_book_tp = corrected_tp;
+        this->qdb_queue_.push(std::move(book_data_for_q));
 
-        state.updateTopNForQuestDB();
-
-        if (!isSnapshot && state.topBidsForQuest == state.lastSentTopBids && state.topAsksForQuest == state.lastSentTopAsks) {
-          continue;
-        }
-
-        dataForDownstream.tp = corrected_tp;
-        dataForDownstream.exchange = state.exchange;
-        dataForDownstream.assetPair = state.assetPair;
-        dataForDownstream.is_snapshot = isSnapshot;
-        dataForDownstream.topBids = state.topBidsForQuest;
-        dataForDownstream.topAsks = state.topAsksForQuest;
-        dataForDownstream.prev_bid_volumes_l = state.prevBidVolumes_l;
-        dataForDownstream.prev_ask_volumes_l = state.prevAskVolumes_l;
-
-        std::array<AggregatedLevelData, 5> currentTop5Bids{};
-        std::array<AggregatedLevelData, 5> currentTop5Asks{};
-        int i = 0;
-        for (const auto& pair_ : state.bidBookL3) {
-          if (i >= 5) break;
-          currentTop5Bids[i].price_l = pair_.second.price_l;
-          currentTop5Bids[i].size_l = pair_.second.totalSizeAtLevel_l;
-          currentTop5Bids[i].orders_count = pair_.second.getNumOrdersAtLevel();
-          i++;
-        }
-        i = 0;
-        for (const auto& pair_ : state.askBookL3) {
-          if (i >= 5) break;
-          currentTop5Asks[i].price_l = pair_.second.price_l;
-          currentTop5Asks[i].size_l = pair_.second.totalSizeAtLevel_l;
-          currentTop5Asks[i].orders_count = pair_.second.getNumOrdersAtLevel();
-          i++;
-        }
-
-        if (currentTop5Bids != state.lastSentTop5Bids || currentTop5Asks != state.lastSentTop5Asks) {
-          dataForDownstream.top_5_levels_changed = true;
-        }
-
-        int j = 0;
-        for (const auto& pair_ : state.bidBookL3) {
-          if (j++ >= 5) break;
-          SimplePriceLevel spl;
-          spl.price_l = pair_.second.price_l;
-          spl.totalSizeAtLevel_l = pair_.second.totalSizeAtLevel_l;
-          spl.orders.reserve(pair_.second.orders.size());
-          for (const auto& order : pair_.second.orders) {
-            spl.orders.push_back({order.size_l, order.arrivalTime});
+        if (!dataForDownstream.is_snapshot && dataForDownstream.top_5_levels_changed) {
+          CalculatedFlowFeatures flow_data_for_q;
+          flow_data_for_q.tp = dataForDownstream.tp;
+          flow_data_for_q.assetPair = dataForDownstream.assetPair;
+          auto bid_ofi_levels = InstrumentState::calculate_ofi_from_simple(dataForDownstream.top_5_bids_levels, dataForDownstream.prev_bid_volumes_l);
+          auto ask_ofi_levels = InstrumentState::calculate_ofi_from_simple(dataForDownstream.top_5_asks_levels, dataForDownstream.prev_ask_volumes_l);
+          for (int k_ofi = 0; k_ofi < 5; ++k_ofi) {
+            *(&flow_data_for_q.ofi_level1 + k_ofi) = bid_ofi_levels[k_ofi] - ask_ofi_levels[k_ofi];
           }
-          dataForDownstream.top_5_bids_levels.push_back(std::move(spl));
+          this->qdb_queue_.push(std::move(flow_data_for_q));
         }
-        j = 0;
-        for (const auto& pair_ : state.askBookL3) {
-          if (j++ >= 5) break;
-          SimplePriceLevel spl;
-          spl.price_l = pair_.second.price_l;
-          spl.totalSizeAtLevel_l = pair_.second.totalSizeAtLevel_l;
-          spl.orders.reserve(pair_.second.orders.size());
-          for (const auto& order : pair_.second.orders) {
-            spl.orders.push_back({order.size_l, order.arrivalTime});
+        // In kraken_l3_collector.cpp -> MyEventHandler::instrument_worker_main
+
+        // FIX: Use the fully qualified name for the message type to fix the build error.
+      } else if (message.getType() == ccapi::Message::Type::MARKET_DATA_EVENTS_TRADE) {
+        // Logic is now entirely inside the loop to process each trade's unique timestamp.
+        for (const auto& element : message.getElementList()) {
+          const auto& tradeDataMap = element.getNameValueMap();
+          if (tradeDataMap.empty()) continue;
+
+          auto getMapValue = [&](const std::string& key) { return tradeDataMap.count(key) ? tradeDataMap.at(key) : ""; };
+
+          // Get the individual timestamp for THIS specific trade.
+          std::string timeStr = getMapValue("event_time");
+          if (timeStr.empty()) {
+            continue;
           }
-          dataForDownstream.top_5_asks_levels.push_back(std::move(spl));
-        }
 
-        // Apply the fix here.
-        state.lastSentTopBids = state.topBidsForQuest;
-        state.lastSentTopAsks = state.topAsksForQuest;
-        state.lastSentTop5Bids = currentTop5Bids;
-        state.lastSentTop5Asks = currentTop5Asks;
-        state.prevBidVolumes_l.clear();
-        for (const auto& pair : state.bidBookL3) state.prevBidVolumes_l[pair.first] = pair.second.totalSizeAtLevel_l;
-        state.prevAskVolumes_l.clear();
-        for (const auto& pair : state.askBookL3) state.prevAskVolumes_l[pair.first] = pair.second.totalSizeAtLevel_l;
-      }
+          std::string priceStr = getMapValue(CCAPI_LAST_PRICE);
+          std::string sizeStr = getMapValue(CCAPI_LAST_SIZE);
 
-      if (dataForDownstream.topBids[0].price_l <= 0 || dataForDownstream.topAsks[0].price_l <= 0) {
-        continue;
-      }
-
-      L3DataForQueue book_data_for_q;
-      book_data_for_q.tp = dataForDownstream.tp;
-      book_data_for_q.exchange = dataForDownstream.exchange;
-      book_data_for_q.assetPair = dataForDownstream.assetPair;
-      book_data_for_q.topBids = dataForDownstream.topBids;
-      book_data_for_q.topAsks = dataForDownstream.topAsks;
-
-      for (size_t i = 0; i < dataForDownstream.top_5_bids_levels.size(); ++i) {
-        book_data_for_q.topBidsFeatures[i] =
-            InstrumentState::calculate_level_features_from_simple(dataForDownstream.top_5_bids_levels[i], dataForDownstream.tp);
-      }
-      for (size_t i = 0; i < dataForDownstream.top_5_asks_levels.size(); ++i) {
-        book_data_for_q.topAsksFeatures[i] =
-            InstrumentState::calculate_level_features_from_simple(dataForDownstream.top_5_asks_levels[i], dataForDownstream.tp);
-      }
-      // And this will work
-      this->qdb_queue_.push(std::move(book_data_for_q));
-
-      if (!dataForDownstream.is_snapshot && dataForDownstream.top_5_levels_changed) {
-        CalculatedFlowFeatures flow_data_for_q;
-        flow_data_for_q.tp = dataForDownstream.tp;
-        flow_data_for_q.assetPair = dataForDownstream.assetPair;
-        auto bid_ofi_levels = InstrumentState::calculate_ofi_from_simple(dataForDownstream.top_5_bids_levels, dataForDownstream.prev_bid_volumes_l);
-        auto ask_ofi_levels = InstrumentState::calculate_ofi_from_simple(dataForDownstream.top_5_asks_levels, dataForDownstream.prev_ask_volumes_l);
-        for (int k_ofi = 0; k_ofi < 5; ++k_ofi) {
-          *(&flow_data_for_q.ofi_level1 + k_ofi) = bid_ofi_levels[k_ofi] - ask_ofi_levels[k_ofi];
-        }
-        this->qdb_queue_.push(std::move(flow_data_for_q));
-      }
-      // In kraken_l3_collector.cpp -> MyEventHandler::instrument_worker_main
-
-      // FIX: Use the fully qualified name for the message type to fix the build error.
-    } else if (message.getType() == ccapi::Message::Type::MARKET_DATA_EVENTS_TRADE) {
-      // Logic is now entirely inside the loop to process each trade's unique timestamp.
-      for (const auto& element : message.getElementList()) {
-        const auto& tradeDataMap = element.getNameValueMap();
-        if (tradeDataMap.empty()) continue;
-
-        auto getMapValue = [&](const std::string& key) { return tradeDataMap.count(key) ? tradeDataMap.at(key) : ""; };
-
-        // Get the individual timestamp for THIS specific trade.
-        std::string timeStr = getMapValue("event_time");
-        if (timeStr.empty()) {
-          continue;
-        }
-
-        std::string priceStr = getMapValue(CCAPI_LAST_PRICE);
-        std::string sizeStr = getMapValue(CCAPI_LAST_SIZE);
-
-        if (priceStr.empty() || sizeStr.empty()) {
-          continue;
-        }
-        double price_d = 0.0, size_d = 0.0;
-        try {
-          price_d = std::stod(priceStr);
-          size_d = std::stod(sizeStr);
-        } catch (const std::exception&) {
-          continue;
-        }
-
-        if (price_d <= 0 || size_d <= 0) {
-          continue;
-        }
-
-        // --- NEW AND SMARTER TIMESTAMP LOGIC ---
-        ccapi::TimePoint corrected_tp;
-        {
-          // 1. Trust the exchange's timestamp first.
-          corrected_tp = ccapi::UtilTime::parse(timeStr);
-
-          // 2. Check if this new timestamp is valid (i.e., after the last one).
-          //    This condition now intelligently handles both true duplicates and out-of-order messages.
-          if (state.last_trade_timestamp.time_since_epoch().count() > 0 && corrected_tp <= state.last_trade_timestamp) {
-            // 3. Only if it's not valid, apply the +1 microsecond safety offset.
-            corrected_tp = state.last_trade_timestamp + std::chrono::microseconds(1);
+          if (priceStr.empty() || sizeStr.empty()) {
+            continue;
           }
-          // 4. Always update the state with the new, guaranteed-unique timestamp for the next trade.
-          state.last_trade_timestamp = corrected_tp;
+          double price_d = 0.0, size_d = 0.0;
+          try {
+            price_d = std::stod(priceStr);
+            size_d = std::stod(sizeStr);
+          } catch (const std::exception&) {
+            continue;
+          }
+
+          if (price_d <= 0 || size_d <= 0) {
+            continue;
+          }
+
+          // --- NEW AND SMARTER TIMESTAMP LOGIC ---
+          ccapi::TimePoint corrected_tp;
+          {
+            // 1. Trust the exchange's timestamp first.
+            corrected_tp = ccapi::UtilTime::parse(timeStr);
+
+            // 2. Check if this new timestamp is valid (i.e., after the last one).
+            //    This condition now intelligently handles both true duplicates and out-of-order messages.
+            if (state.last_trade_timestamp.time_since_epoch().count() > 0 && corrected_tp <= state.last_trade_timestamp) {
+              // 3. Only if it's not valid, apply the +1 microsecond safety offset.
+              corrected_tp = state.last_trade_timestamp + std::chrono::microseconds(1);
+            }
+            // 4. Always update the state with the new, guaranteed-unique timestamp for the next trade.
+            state.last_trade_timestamp = corrected_tp;
+          }
+
+          std::string side = getMapValue(CCAPI_EM_ORDER_SIDE);
+          std::transform(side.begin(), side.end(), side.begin(), ::toupper);
+          std::string ord_type = getMapValue("ORD_TYPE");
+
+          this->qdb_queue_.push(TradeDataForQueue{state.exchange, state.assetPair, price_d, size_d, side, ord_type, corrected_tp});
         }
-
-        std::string side = getMapValue(CCAPI_EM_ORDER_SIDE);
-        std::transform(side.begin(), side.end(), side.begin(), ::toupper);
-        std::string ord_type = getMapValue("ORD_TYPE");
-
-        this->qdb_queue_.push(TradeDataForQueue{state.exchange, state.assetPair, price_d, size_d, side, ord_type, corrected_tp});
       }
     }
+    std::cout << "[WORKER] Thread shutting down for " << instrumentKey << std::endl;
   }
-  std::cout << "[WORKER] Thread shutting down for " << instrumentKey << std::endl;
-}
+
 }  // namespace kraken_l3_collector_questdb
 
 static std::string getEnvVar(const char* name) {
@@ -1965,7 +2007,7 @@ int main(int argc, char** argv) {
   // std::cout << "INFO KRAKEN: Starting CCAPI session and dispatcher..." << std::endl;
   // dispatcher.start();
 
-  int runSeconds = 60;
+  int runSeconds = 8 * 60 * 60;
   if (argc > 1) {
     try {
       runSeconds = std::stoi(argv[1]);

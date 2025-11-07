@@ -11,6 +11,14 @@ project(KrakenL3Collector LANGUAGES CXX)
 
 cmake_policy(SET CMP0167 NEW)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+if (MSVC)
+  # For Debug builds, switch MSVC runtime to the Debug DLL (/MDd)
+  string(REPLACE "/MD" "/MDd" CMAKE_C_FLAGS_DEBUG     "${CMAKE_C_FLAGS_DEBUG}")
+  string(REPLACE "/MD" "/MDd" CMAKE_CXX_FLAGS_DEBUG   "${CMAKE_CXX_FLAGS_DEBUG}")
+endif()
+
 # Set the default build type to be an optimized release with debug info
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Build type" FORCE) #DEBUG
