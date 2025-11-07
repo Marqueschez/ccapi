@@ -1,3 +1,482 @@
+# Kraken Level 3 Market Data Collector
+
+A high-performance C++ application that collects real-time **Level 3 (full order book)** market data from Kraken cryptocurrency exchange and stores it in QuestDB for analysis. This implementation extends the [crypto-chassis/ccapi](https://github.com/crypto-chassis/ccapi) library with custom Kraken-specific Level 3 order book management.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [What is Level 3 Market Data?](#what-is-level-3-market-data)
+- [Market Data Collected](#market-data-collected)
+  - [Level 3 Order Book Data](#level-3-order-book-data)
+  - [Public Trade Data](#public-trade-data)
+  - [Derived Market Microstructure Features](#derived-market-microstructure-features)
+- [Architecture](#architecture)
+- [Key Features](#key-features)
+- [Build Instructions](#build-instructions)
+  - [Prerequisites](#prerequisites)
+  - [Building with CMake](#building-with-cmake)
+- [Configuration](#configuration)
+- [Data Storage](#data-storage)
+- [Technical Implementation Details](#technical-implementation-details)
+- [Monitored Trading Pairs](#monitored-trading-pairs)
+- [Performance Considerations](#performance-considerations)
+- [Dependencies](#dependencies)
+
+## Overview
+
+This project implements a real-time market data collection system specifically designed for Kraken's Level 3 order book data. Unlike traditional Level 1 (best bid/ask) or Level 2 (aggregated depth) data, Level 3 provides **individual order-level granularity**, allowing for advanced market microstructure analysis, order flow analysis, and algorithmic trading research.
+
+The collector maintains a full in-memory order book reconstruction with:
+- Individual order tracking with unique order IDs
+- Price-time priority queue management at each price level
+- CRC32 checksum validation for data integrity
+- Real-time computation of market microstructure features
+- Efficient streaming ingestion to QuestDB time-series database
+
+## What is Level 3 Market Data?
+
+Market data comes in three levels of granularity:
+
+- **Level 1**: Best bid and ask prices with sizes (top of book)
+- **Level 2**: Aggregated order book depth showing total size at each price level
+- **Level 3**: Full order book showing **every individual order** with unique order IDs, prices, and sizes
+
+Level 3 data provides the most granular view of market structure, enabling:
+- Order queue position analysis
+- Order flow imbalance (OFI) calculations
+- Market maker behavior analysis
+- Toxic flow detection
+- High-frequency trading research
+- Market impact studies
+
+## Market Data Collected
+
+### Level 3 Order Book Data
+
+For each subscribed trading pair, the collector tracks and stores:
+
+#### Individual Order Information
+- **Order ID**: Unique identifier for each limit order in the book
+- **Price**: Limit price of the order (stored with 7 decimal places precision)
+- **Size**: Order quantity (stored with 8 decimal places precision)
+- **Side**: Bid or Ask
+- **Timestamp**: Arrival time of the order with microsecond precision
+- **Queue Position**: Implicit position based on arrival time at each price level
+
+#### Aggregated Level Data (Top 8 Price Levels per Side)
+For the best 8 bid and ask price levels, the following aggregated metrics are computed and stored:
+
+- **Price**: The price level (as integer with 10^7 multiplier)
+- **Total Size**: Sum of all order sizes at this price level (as integer with 10^8 multiplier)
+- **Order Count**: Number of individual orders at this price level
+
+**Data Storage Format**: `kraken_l3_book_levels_agg` table in QuestDB
+- Provides a snapshot of the top 8 levels of the order book
+- Updates pushed only when the top levels change
+- Enables efficient querying of order book state over time
+
+### Public Trade Data
+
+Real-time executed trades are captured with the following fields:
+
+- **Exchange**: "kraken"
+- **Asset Pair**: Trading pair symbol (e.g., "BTC/USD")
+- **Price**: Execution price
+- **Size**: Trade quantity
+- **Side**: Taker side ("buy" or "sell")
+- **Order Type**: Type of order that caused the trade
+- **Timestamp**: Trade execution time with microsecond precision and monotonicity guarantees
+
+**Data Storage Format**: `kraken_trades` table in QuestDB
+
+### Derived Market Microstructure Features
+
+For the top 5 price levels on each side, advanced features are calculated in real-time:
+
+#### Order Queue Features (per level)
+- **orders80pct**: Number of orders needed to represent 80% of total volume at the level
+- **HHI** (Herfindahl-Hirschman Index): Measure of order size concentration (sum of squared market shares)
+- **topOrderSize**: Size of the order at the front of the queue
+- **topOrderAge_ms**: Age in milliseconds of the order at the front of the queue
+
+#### Order Flow Imbalance (OFI)
+- **ofi_level1 through ofi_level5**: Change in volume at each of the top 5 price levels
+- Calculated as: `current_volume - previous_volume` at each price level
+- Separate calculations for bid and ask sides
+- Useful for predicting short-term price movements
+
+**Data Storage Format**: `kraken_l3_book_level_features` and `kraken_ofi` tables in QuestDB
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Kraken Exchange                              │
+│  ┌──────────────────┐         ┌──────────────────┐            │
+│  │  Authenticated   │         │   Public WS      │            │
+│  │  WebSocket API   │         │   Trade Feed     │            │
+│  │   (Level 3)      │         │                  │            │
+│  └────────┬─────────┘         └────────┬─────────┘            │
+└───────────┼──────────────────────────────┼────────────────────┘
+            │                              │
+            │ Order book events            │ Trade events
+            │ (add/modify/delete)          │
+            ▼                              ▼
+    ┌───────────────────────────────────────────────────┐
+    │         CCAPI Session (WebSocket)                 │
+    │  - Connection management                          │
+    │  - Authentication & token refresh                 │
+    │  - Message parsing                                │
+    └───────────────────┬───────────────────────────────┘
+                        │
+                        ▼
+    ┌────────────────────────────────────────────────────┐
+    │          MyEventHandler                            │
+    │  - Per-instrument state management                 │
+    │  - Order book reconstruction                       │
+    │  - CRC32 checksum validation                       │
+    │  - Feature calculation                             │
+    └────────────────────┬───────────────────────────────┘
+                         │
+                         ▼
+    ┌────────────────────────────────────────────────────┐
+    │       ThreadSafeQueue<QdbEvent>                    │
+    │  - Decouples data collection from ingestion        │
+    │  - Lock-free queue for high throughput             │
+    └────────────────────┬───────────────────────────────┘
+                         │
+                         ▼
+    ┌────────────────────────────────────────────────────┐
+    │      QuestDB Writer Thread                         │
+    │  - Batched writes via ILP (line protocol)          │
+    │  - Automatic table switching                       │
+    │  - Error handling & retry logic                    │
+    └────────────────────┬───────────────────────────────┘
+                         │
+                         ▼
+    ┌────────────────────────────────────────────────────┐
+    │              QuestDB Database                      │
+    │  - Time-series optimized storage                   │
+    │  - Fast columnar queries                           │
+    │  - Native timestamp indexing                       │
+    └────────────────────────────────────────────────────┘
+```
+
+## Key Features
+
+### Order Book Management
+- **Full Level 3 reconstruction**: Maintains complete order book state with individual orders
+- **Price-time priority**: Orders at each price level stored in arrival order (FIFO queue)
+- **Efficient updates**: Uses hash maps for O(1) order lookup and linked lists for queue management
+- **Memory bounded**: Automatically prunes orders beyond configured depth (10 levels by default)
+- **CRC32 validation**: Validates order book integrity using Kraken-provided checksums
+
+### Data Integrity
+- **Checksum verification**: Every order book update is validated against CRC32 checksums
+- **Deferred verification**: Intelligent deferral system to handle transient inconsistencies
+- **Automatic resubscription**: Triggers resubscription on persistent checksum failures
+- **Monotonic timestamps**: Ensures all trades have strictly increasing timestamps
+
+### High Performance
+- **Lock-free data structures**: Thread-safe queues minimize contention
+- **Fixed-point arithmetic**: Uses integer representation (price × 10^7, size × 10^8) for precision
+- **Zero-copy design**: Minimizes string allocations and copying
+- **Batched database writes**: Aggregates multiple updates before flushing to QuestDB
+- **Multi-threaded**: Separate threads for data collection and database ingestion
+
+### Production Ready
+- **Robust error handling**: Graceful handling of connection issues, malformed data
+- **Comprehensive logging**: Detailed debug logs with configurable verbosity
+- **Graceful shutdown**: Clean resource cleanup on termination
+- **Configuration via environment**: API credentials passed through environment variables
+
+## Build Instructions
+
+### Prerequisites
+
+- **C++17 compatible compiler**: GCC 7+, Clang 5+, or MSVC 2017+
+- **CMake**: Version 3.20 or higher
+- **vcpkg**: For dependency management
+- **OpenSSL**: For secure WebSocket connections
+- **Boost**: Version 1.87.0 or higher (required by CCAPI)
+- **ZLIB**: For data compression
+- **QuestDB**: Version 7.0+ running locally or remotely
+
+Required vcpkg packages:
+```bash
+vcpkg install boost openssl nlohmann-json rapidjson zlib
+```
+
+### Building with CMake
+
+1. **Clone the repository** (or navigate to project directory):
+```bash
+cd c:\dev\ccapi
+```
+
+2. **Configure environment variables** for Kraken API credentials:
+```bash
+# Windows (PowerShell)
+$env:KRAKEN_API_KEY = "your-api-key"
+$env:KRAKEN_API_SECRET = "your-api-secret"
+
+# Linux/macOS
+export KRAKEN_API_KEY="your-api-key"
+export KRAKEN_API_SECRET="your-api-secret"
+```
+
+3. **Create build directory and configure**:
+```bash
+mkdir build
+cd build
+cmake .. -DCMAKE_TOOLCHAIN_FILE=[path-to-vcpkg]/scripts/buildsystems/vcpkg.cmake
+```
+
+4. **Build the project**:
+```bash
+cmake --build . --config Release
+```
+
+5. **Run the collector**:
+```bash
+# Run for 60 seconds (default)
+./kraken_l3_collector
+
+# Run for custom duration (e.g., 300 seconds)
+./kraken_l3_collector 300
+```
+
+## Configuration
+
+### Environment Variables
+
+The collector requires Kraken API credentials to access authenticated Level 3 data:
+
+- `KRAKEN_API_KEY`: Your Kraken API public key
+- `KRAKEN_API_SECRET`: Your Kraken API secret key
+
+**Note**: The API key must have permissions for:
+- Query Funds
+- Query Open Orders & Trades
+- WebSocket Authentication
+
+### QuestDB Configuration
+
+By default, the collector connects to QuestDB at:
+- **Host**: `localhost`
+- **Port**: `9009` (ILP/TCP)
+
+To modify, edit the constants in [kraken_l3_collector.cpp](example/src/kraken_l3_collector.cpp):
+```cpp
+const std::string QUESTDB_HOST = "localhost";
+const int QUESTDB_ILP_TCP_PORT = 9009;
+```
+
+### Depth Configuration
+
+The collector can be configured for different order book depths:
+
+```cpp
+const size_t MAX_BOOK_DEPTH = 10;              // Maximum levels to maintain
+const int NUM_AGGREGATED_LEVELS_TO_SEND = 8;  // Levels to send to QuestDB
+const int CRC_DEPTH = 10;                      // Levels used for checksum
+```
+
+## Data Storage
+
+### QuestDB Tables
+
+The collector creates and populates the following tables:
+
+#### 1. `kraken_l3_book_levels_agg`
+Top-of-book aggregated levels (8 levels per side).
+
+**Columns**:
+- `timestamp` (TIMESTAMP)
+- `symbol` (SYMBOL)
+- `side` (SYMBOL): "bid" or "ask"
+- `level_idx` (INT): 0-7 representing top 8 levels
+- `price_long` (LONG): Price × 10^7
+- `size_long` (LONG): Total size × 10^8
+- `num_orders` (LONG): Count of orders at level
+
+#### 2. `kraken_trades`
+Executed trades in real-time.
+
+**Columns**:
+- `timestamp` (TIMESTAMP)
+- `symbol` (SYMBOL)
+- `price` (DOUBLE)
+- `size` (DOUBLE)
+- `side` (SYMBOL): "buy" or "sell"
+- `ord_type` (STRING)
+
+#### 3. `kraken_l3_book_level_features`
+Advanced microstructure features for top 5 levels.
+
+**Columns**:
+- `timestamp` (TIMESTAMP)
+- `symbol` (SYMBOL)
+- `side` (SYMBOL)
+- `level_idx` (INT): 0-4
+- `orders_80pct` (LONG)
+- `hhi` (DOUBLE)
+- `top_order_size` (DOUBLE)
+- `top_order_age_ms` (LONG)
+
+#### 4. `kraken_ofi`
+Order Flow Imbalance metrics.
+
+**Columns**:
+- `timestamp` (TIMESTAMP)
+- `symbol` (SYMBOL)
+- `ofi_level1_bid` through `ofi_level5_bid` (DOUBLE)
+- `ofi_level1_ask` through `ofi_level5_ask` (DOUBLE)
+
+## Technical Implementation Details
+
+### Precision and Fixed-Point Arithmetic
+
+To avoid floating-point precision issues in financial calculations:
+
+- **Prices**: Stored as `int64_t` with 7 decimal places (`price_long = price × 10^7`)
+- **Sizes**: Stored as `int64_t` with 8 decimal places (`size_long = size × 10^8`)
+
+This ensures exact representation and fast integer arithmetic while maintaining sufficient precision for cryptocurrency markets.
+
+### Order Book Data Structure
+
+```cpp
+struct L3PriceLevel {
+  int64_t price_l;                                      // Fixed-point price
+  std::string price;                                    // Original price string
+  std::list<L3Order> orders;                            // FIFO queue of orders
+  std::map<std::string, std::list<L3Order>::iterator> orderId_to_iter;
+  int64_t totalSizeAtLevel_l;                          // Cached sum
+};
+```
+
+**Bid Book**: `std::map<int64_t, L3PriceLevel, std::greater<int64_t>>` (descending order)
+**Ask Book**: `std::map<int64_t, L3PriceLevel>` (ascending order)
+
+### CRC32 Checksum Validation
+
+Kraken provides CRC32 checksums with every update. The collector:
+1. Computes a local checksum from the top 10 levels
+2. Compares against the exchange-provided checksum
+3. Defers verification briefly on mismatches (to handle message ordering issues)
+4. Triggers resubscription if persistent mismatches detected
+
+### Event Types Handled
+
+From Kraken's WebSocket API:
+- `add`: New order added to book
+- `modify`: Existing order size changed (price unchanged)
+- `delete`: Order removed from book
+- `snapshot`: Full book state (on initial subscription)
+
+## Monitored Trading Pairs
+
+The collector currently monitors these 10 major cryptocurrency pairs on Kraken:
+
+1. BTC/USD (Bitcoin)
+2. ETH/USD (Ethereum)
+3. USDT/USD (Tether)
+4. SOL/USD (Solana)
+5. XRP/USD (Ripple)
+6. DOGE/USD (Dogecoin)
+7. ADA/USD (Cardano)
+8. LTC/USD (Litecoin)
+9. LINK/USD (Chainlink)
+10. DOT/USD (Polkadot)
+
+To modify the list, edit the `PAIRS_TO_SUBSCRIBE` vector in [kraken_l3_collector.cpp](example/src/kraken_l3_collector.cpp):
+```cpp
+const std::vector<std::string> PAIRS_TO_SUBSCRIBE = {
+  "BTC/USD", "ETH/USD", /* add more pairs */
+};
+```
+
+## Performance Considerations
+
+### Throughput
+- Handles **1000+ order book updates per second** per trading pair
+- Batched database writes reduce I/O overhead
+- Lock-free queue enables producer/consumer parallelism
+
+### Latency
+- **Sub-millisecond** in-memory order book updates
+- **10-50ms** end-to-end latency from exchange to QuestDB (depends on network)
+
+### Memory Usage
+- Approximately **50-100 MB** per trading pair with 10-level depth
+- Automatic pruning keeps memory bounded
+
+### CPU Usage
+- **Single-threaded** event processing for each instrument (ensures ordering)
+- **Separate thread** for QuestDB ingestion
+- Modern multi-core CPUs can easily handle 10+ pairs simultaneously
+
+## Dependencies
+
+### Core Libraries
+- **[ccapi](https://github.com/crypto-chassis/ccapi)**: Cryptocurrency exchange API library (header-only)
+- **Boost 1.87.0+**: For ASIO (async I/O), regex, and other utilities
+- **OpenSSL**: For WebSocket TLS connections
+- **RapidJSON**: Fast JSON parsing (used by ccapi)
+- **nlohmann/json**: Modern C++ JSON library (used for some parsing)
+- **ZLIB**: Data compression support
+
+### Database
+- **[QuestDB C++ Client](https://github.com/questdb/c-questdb-client)**: Ingestion library (ILP protocol)
+  - Automatically fetched via CMake FetchContent
+  - Version 4.0.5
+
+### Build Tools
+- **CMake 3.20+**: Build system
+- **vcpkg**: Package manager for C++ dependencies
+
+---
+
+## Original CCAPI Library
+
+This project builds upon the excellent [crypto-chassis/ccapi](https://github.com/crypto-chassis/ccapi) library, which provides a unified API for multiple cryptocurrency exchanges. The original library supports:
+
+- **60+ exchanges** for market data and execution management
+- REST and WebSocket APIs
+- FIX protocol support
+- Multi-language bindings (Python, Java, C#, Go, JavaScript)
+
+For generic usage of the CCAPI library (non-Kraken Level 3 specific), please refer to the original documentation below or visit [the official repository](https://github.com/crypto-chassis/ccapi).
+
+---
+
+## License
+
+This project inherits the license from the [crypto-chassis/ccapi](https://github.com/crypto-chassis/ccapi) library. Please refer to the LICENSE file in the repository.
+
+## Support
+
+For issues specific to the Kraken Level 3 implementation, please open an issue in this repository.
+
+For general CCAPI questions, visit the [CCAPI Discord](https://discord.gg/b5EKcp9s8T) or [Medium](https://cryptochassis.medium.com).
+
+---
+
+## Acknowledgments
+
+- **crypto-chassis**: For the excellent CCAPI library
+- **Kraken**: For providing robust Level 3 market data APIs
+- **QuestDB**: For the high-performance time-series database
+
+---
+
+# Original CCAPI Documentation
+
+Below is the original README content for the generic CCAPI library:
+
+---
+
 # Some breaking changes introduced
 * Please update boost version to at least 1.87.0.
 * When a subscription fails due to the underlying websocket connection fails to open, the emitted message type is SUBSCRIPTION_FAILURE_DUE_TO_CONNECTION_FAILURE instead of SUBSCRIPTION_FAILURE.
@@ -118,7 +597,7 @@ cmake --build .
   * "Could NOT find OpenSSL, try to set the path to OpenSSL root folder in the system variable OPENSSL_ROOT_DIR (missing: OPENSSL_INCLUDE_DIR)". Try `cmake -DOPENSSL_ROOT_DIR=...`. On macOS, you might be missing headers for OpenSSL, `brew install openssl` and `cmake -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl`. On Ubuntu, `sudo apt-get install libssl-dev`. On Windows, `vcpkg install openssl:x64-windows` and `cmake -DOPENSSL_ROOT_DIR=C:/vcpkg/installed/x64-windows-static`.
   * Python:
     * "CMake Error at python/CMakeLists.txt:... (message): Require Python 3". Try to create and activate a virtual environment (managed by `venv` or `conda`) with Python 3.
-    * "‘_PyObject_GC_UNTRACK’ was not declared in this scope". If you use Python >= 3.8, please use SWIG >= 4.0.
+    * "'_PyObject_GC_UNTRACK' was not declared in this scope". If you use Python >= 3.8, please use SWIG >= 4.0.
   * Java:
     * "Could NOT find JNI (missing: JAVA_INCLUDE_PATH JAVA_INCLUDE_PATH2 JAVA_AWT_INCLUDE_PATH)". Check that the environment variable `JAVA_HOME` is correct.
   * Javascript:

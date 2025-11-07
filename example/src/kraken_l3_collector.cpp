@@ -1422,58 +1422,76 @@ class MyEventHandler : public ccapi::EventHandler {
       return;
     }
 
-    // This is the specific subscription we want to cycle.
     const ccapi::Subscription& singleSubscription = sub_it->second;
 
-    static std::atomic<long long> req_id_counter{1};
-    long long req_id = req_id_counter.fetch_add(1);
-    std::string req_id_str = std::to_string(req_id);
+    // --- NEW RETRY LOGIC ---
+    const int max_retries = 3;
+    bool unsubscribe_successful = false;
 
-    std::promise<bool> ackPromise;
-    std::future<bool> ackFuture = ackPromise.get_future();
+    for (int attempt = 1; attempt <= max_retries; ++attempt) {
+      // Each attempt needs a new req_id and a new promise
+      static std::atomic<long long> req_id_counter{1};
+      long long req_id = req_id_counter.fetch_add(1);
+      std::string req_id_str = std::to_string(req_id);
 
-    {
-      std::lock_guard<std::mutex> ackLock(ackMutex_);
-      ackPromises_.emplace(req_id_str, std::move(ackPromise));
-    }
+      std::promise<bool> ackPromise;
+      std::future<bool> ackFuture = ackPromise.get_future();
 
-    // Create a new subscription object for the unsubscribe message, adding the req_id
-    ccapi::Subscription subToUnsubscribe = singleSubscription;
-    subToUnsubscribe.setOption("req_id", req_id_str);
-
-    std::cout << "[RESYNC] Sending unsubscribe for " << instrumentKey << " with req_id=" << req_id_str << std::endl;
-    // Pass a list containing only the single subscription to unsubscribe
-    session->unsubscribe({subToUnsubscribe});
-
-    std::cout << "[RESYNC] Waiting for unsubscribe ACK for " << instrumentKey << "..." << std::endl;
-    if (ackFuture.wait_for(std::chrono::seconds(5)) == std::future_status::timeout) {
-      std::cerr << "[RESYNC] WARNING: Timed out waiting for unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << "). Proceeding with caution."
-                << std::endl;
-    } else {
-      if (ackFuture.get()) {
-        std::cout << "[RESYNC] Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") received and successful." << std::endl;
-      } else {
-        std::cerr << "[RESYNC] WARNING: Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") reported failure. Proceeding with caution."
-                  << std::endl;
+      {
+        std::lock_guard<std::mutex> ackLock(ackMutex_);
+        ackPromises_.emplace(req_id_str, std::move(ackPromise));
       }
-    }
 
-    {
-      std::lock_guard<std::mutex> ackLock(ackMutex_);
-      ackPromises_.erase(req_id_str);
-    }
+      ccapi::Subscription subToUnsubscribe = singleSubscription;
+      subToUnsubscribe.setOption("req_id", req_id_str);
 
-    // Clear the book state for ONLY the affected instrument.
+      std::cout << "[RESYNC] Sending unsubscribe for " << instrumentKey << " with req_id=" << req_id_str << " (attempt " << attempt << "/" << max_retries << ")"
+                << std::endl;
+      session->unsubscribe({subToUnsubscribe});
+
+      std::cout << "[RESYNC] Waiting for unsubscribe ACK for " << instrumentKey << " (1s)..." << std::endl;
+      if (ackFuture.wait_for(std::chrono::seconds(1)) == std::future_status::ready) {
+        bool ack_result = ackFuture.get();
+        if (ack_result) {
+          std::cout << "[RESYNC] Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") received and successful." << std::endl;
+          unsubscribe_successful = true;
+          // Clean up the successful promise from the map
+          {
+            std::lock_guard<std::mutex> ackLock(ackMutex_);
+            ackPromises_.erase(req_id_str);
+          }
+          break;  // Exit the retry loop on success
+        } else {
+          std::cerr << "[RESYNC] WARNING: Unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ") reported failure. Retrying..." << std::endl;
+        }
+      } else {  // Timeout
+        std::cerr << "[RESYNC] WARNING: Timed out waiting for unsubscribe ACK for " << instrumentKey << " (req_id=" << req_id_str << ")." << std::endl;
+      }
+
+      // Clean up the failed/timed-out promise from the map before the next attempt
+      {
+        std::lock_guard<std::mutex> ackLock(ackMutex_);
+        ackPromises_.erase(req_id_str);
+      }
+    }  // End of retry loop
+
+    if (!unsubscribe_successful) {
+      std::cerr << "[RESYNC] ERROR: All " << max_retries << " unsubscribe attempts failed for " << instrumentKey
+                << ". Aborting resync. The connection will be reset by the library." << std::endl;
+      state.resyncInProgress = false;  // Allow another resync to be triggered if needed
+      return;                          // Give up and let the default connection teardown handle it
+    }
+    std::cout << "[RESYNC] Unsubscribe successful. Waiting 250ms before re-subscribing..." << std::endl;
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+
+    // This part only executes if the unsubscribe was successful
     state.clearL3Book();
     std::cout << "[RESYNC] Book cleared for " << instrumentKey << ". Re-subscribing." << std::endl;
 
-    // The base class `subscribe` will handle finding the right connection or creating a new one.
-    // It will send the request to the ws-auth endpoint because the subscription contains the token.
     std::vector<ccapi::Subscription> subscriptionsToResubscribe = {singleSubscription};
     session->subscribe(subscriptionsToResubscribe);
 
-    // The `resyncInProgress` flag will be set to false inside `processKrakenL3Snapshot`
-    // once the new snapshot for this instrument is successfully processed.
+    // The resyncInProgress flag is reset in processKrakenL3Snapshot
   }
 };
 

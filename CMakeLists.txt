@@ -1,16 +1,15 @@
 # CMake minimum version requirement
 cmake_minimum_required(VERSION 3.20)
 
+# Select the C++ runtime library for MSVC
+if (MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
+
 # Define the project
 project(KrakenL3Collector LANGUAGES CXX)
 
 cmake_policy(SET CMP0167 NEW)
-
-if (MSVC)
-  # For Debug builds, switch MSVC runtime to the Debug DLL (/MDd)
-  string(REPLACE "/MD" "/MDd" CMAKE_C_FLAGS_DEBUG     "${CMAKE_C_FLAGS_DEBUG}")
-  string(REPLACE "/MD" "/MDd" CMAKE_CXX_FLAGS_DEBUG   "${CMAKE_CXX_FLAGS_DEBUG}")
-endif()
 
 # Set the default build type to be an optimized release with debug info
 if(NOT CMAKE_BUILD_TYPE)
@@ -39,6 +38,14 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/questdb/c-questdb-client.git
   GIT_TAG        4.0.5  # Use a specific, stable release tag instead of "main"
 )
+# THIS IS THE FIX: Ensure the fetched content uses the same build type
+# as the main project. This prevents the runtime library mismatch.
+FetchContent_GetProperties(questdb_cpp_client)
+if(NOT questdb_cpp_client_POPULATED)
+  FetchContent_Populate(questdb_cpp_client)
+  add_subdirectory(${questdb_cpp_client_SOURCE_DIR} ${questdb_cpp_client_BINARY_DIR})
+endif()
+
 set(QUESTDB_SYSTEM_TESTING OFF CACHE BOOL "Disable QuestDB system tests" FORCE)
 
 # This command will download and configure the QuestDB client.
